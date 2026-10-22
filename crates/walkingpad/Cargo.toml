@@ -1,0 +1,21 @@
+[package]
+name = "walkingpad"
+version = "0.1.0"
+description = "KingSmith WalkingPad R1 Pro protocol and session logic (no Tauri dependency)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Serialize the session's snapshot and settings types (the Tauri app needs it).
+serde = ["dep:serde"]
+# A scripted fake pad and an in-process `Transport` over it, for tests and mock runs.
+fake = []
+
+[dependencies]
+# `protocol` uses none of these; `session` needs timers, channels and `select!`.
+tokio = { version = "1.40", default-features = false, features = ["sync", "time", "rt", "macros"] }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["sync", "time", "rt", "macros", "test-util"] }

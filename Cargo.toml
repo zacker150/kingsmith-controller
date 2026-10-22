@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/walkingpad", "src-tauri"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

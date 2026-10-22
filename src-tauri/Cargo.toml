@@ -1,0 +1,32 @@
+[package]
+name = "kingsmith-controller"
+version = "0.1.0"
+description = "Controller for a KingSmith WalkingPad R1 Pro"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "kingsmith_controller_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Runs the app against a simulated pad instead of Bluetooth: blec's in-process
+# mock backend (no CoreBluetooth at all) with a scripted fake R1 Pro behind it.
+# Desktop only. Use this for every local run; the real pad accepts one
+# connection and can move a belt someone is standing on.
+mock = ["tauri-plugin-blec/mock", "dep:btleplug", "walkingpad/fake"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-blec = "0.18"
+walkingpad = { path = "../crates/walkingpad", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+uuid = "1"
+# Only for building the mock device (`CharPropFlags`); same version blec uses.
+btleplug = { version = "0.13", optional = true }

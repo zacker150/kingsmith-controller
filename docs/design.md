@@ -5,13 +5,19 @@ answers. Nothing is implemented yet.
 
 A small desktop and Android app that connects to a KingSmith WalkingPad R1 Pro
 over Bluetooth LE and controls it: start, stop, speed, mode and live stats.
-Device facts are in the [README](../README.md). Protocol references:
+Device facts are in the [README](../README.md) and the
+[R1 Pro user manual](https://m.media-amazon.com/images/I/9146UtOoENL.pdf).
+Protocol references:
 
 - [ph4r05/ph4-walkingpad](https://github.com/ph4r05/ph4-walkingpad) `pad.py`
   (MIT, A1 model).
 - The R1 Pro driver in
   [qdomyos-zwift](https://github.com/cagnulein/qdomyos-zwift/tree/master/src/devices/kingsmithr1protreadmill)
   (GPL-3, so used for facts only, never code).
+- The official **KS Fit 6.6.0** Android app (`com.kingsmith.xiaojin`),
+  decompiled on 2026-10-21 for protocol facts only. It's proprietary, so no
+  code is copied. Where it disagrees with ph4 or qdomyos-zwift, this design
+  follows it.
 
 ## 1. Decision summary
 
@@ -54,7 +60,7 @@ build. They were not measured for this app; the spike in §2.3 measures ours.
   this pad. On Windows it uses WinRT, so Windows costs packaging and testing
   only.
 - **The plugin fits our needs.** `blec` 0.18 has:
-  - scan filters by service UUID;
+  - scan filters by service UUID (applied in software; see §5.2);
   - write-without-response and notifications on Android;
   - connection events;
   - a desktop **mock backend** that simulates devices and dropped links.
@@ -80,6 +86,19 @@ OnePlus 13 it must:
 On Android it also logs the pad's MAC address, to confirm §5.2. It only reads
 status. Pass: everything works on both platforms, and both artifacts are
 ≤ 15 MB.
+
+**Result (2026-10-21): passed on both platforms.** Each platform did two
+connect rounds of status reads.
+
+| | macOS | Android (OnePlus 13) |
+|---|---|---|
+| Release size | 5.1 MB `.app` | 7.7 MB APK (arm64, R8) |
+| Cold start to UI loaded | ~0.35 s | ~0.5 s (unlocked) |
+| Scan to found | 0.2–1.0 s | ~0.6 s |
+| Connect, with service discovery | ~0.5 s | ~0.76 s |
+| Subscribe to first reply | ~0.4 s | ~0.43 s |
+
+The only gap is that scan filtering happens in software (§5.2).
 
 ## 3. Platforms and builds
 
@@ -140,29 +159,36 @@ Commands. Bytes are computed with `pad.py`'s `fix_crc`.
 |---|---|---|
 | Ask status | `f7 a2 00 00 a2 fd` | v1. The only command sent to the pad so far. |
 | Set speed 2.5 km/h (0.1 km/h units) | `f7 a2 01 19 bc fd` | v1 |
-| Speed 0 | `f7 a2 01 00 a3 fd` | ph4's stop. Not yet verified to stop the R1 Pro (§7). |
-| Mode: auto / manual / standby | `f7 a2 02 00 a4 fd` / `… 01 a5 fd` / `… 02 a6 fd` | v1. Manual also clears the lock (state 5). |
-| Start / pause | `f7 a2 04 01 a7 fd` | v1. **A toggle on R1 Pro-family pads** (qdomyos-zwift): pauses a running belt and starts a stopped one. |
+| Speed 0 | `f7 a2 01 00 a3 fd` | ph4's stop. KS Fit never uses it to stop. Not verified on the R1 Pro (§7). |
+| Mode: auto / manual / standby | `f7 a2 02 00 a4 fd` / `… 01 a5 fd` / `… 02 a6 fd` | v1. Manual wakes the pad from standby. KS Fit's separate *Standby* button sends standby. |
+| Start / pause | `f7 a2 04 01 a7 fd` | v1. **A toggle.** It is KS Fit's only start *and* stop command, sent only while the belt is moving. |
 | Last record (latest / next) | `f7 a7 aa ff 50 fd` / `f7 a7 aa 00 51 fd` | Phase 2 |
+| Info + time | `f7 a5 <unix time:4> <arg:2> <crc> fd` | Phase 2. Reply: model code (ASCII, bytes 3–4, e.g. "R1"), min speed (byte 8), version (15), protocol version (16). |
+| Settings query | `f7 a6 00 00 00 00 00 a6 fd` | Phase 2. Reply `f8 a6`: goal type (2), goal value (3–5), max speed (7), start speed (8), start type (9), sensitivity (10), display mask (11), child lock (12), unit (13; 0 = metric), walking max `maxW` (14). |
 | Preference `key` = `val` | `f7 a6 <key> 00 <val:3> <crc> fd`, e.g. max speed 6.0 → `f7 a6 03 00 00 00 3c e5 fd` | Phase 2 |
+| Property read / write (protocol ≥ 20) | `f7 b1 …` → `f8 b2 …`; write `f7 b3 <len+1> <id> <value> <crc> fd` | Phase 2. Properties include 0x07 maxW, 0x15 handrail, 0x18 max, 0x1e no-load stop. |
 
-qdomyos-zwift also sends an init sequence (`f7 a5 …`, `f7 a6 00 …`,
-`f7 b1 …`, `f7 b3 …`) whose meaning is unknown. Our pad answers status
-without it, so we don't send it.
+On connect, KS Fit queues info + time, status, settings and a record sync
+(`a7 aa ff`), but it doesn't wait for any replies before sending control
+commands. Our pad answers status without them. v1 sends none of them;
+supervised test 2 checks that control works without them.
 
 Status frame (`f8 a2`, 20 bytes):
 
 | Bytes | Meaning |
 |---|---|
-| 2 | Belt state: 0 idle, 1 running, 9 start countdown, 5 locked/standby. qdomyos-zwift: the pad locks after ~15 min idle; switching to manual unlocks it. |
+| 2 | Belt state (KS Fit): 0 ready, 1 running, 2 paused, 3 stopped, 4 fault, 5 sleep (the manual's standby: "motor and sensor stop responding"), 6–9 countdown, 10 other, 11 or 0xff lock-off, anything else other. |
 | 3 | Current speed, 0.1 km/h |
-| 4 | Mode: 0 auto, 1 manual, 2 standby |
+| 4 | Mode: 0 auto, 1 manual, 2 standby, 3 "newer" (handled like standby) |
 | 5–7 | Time, s |
 | 8–10 | Distance, 10 m |
 | 11–13 | Steps |
-| 14 | Target speed. A1 data fits ×3 (54 after setting 1.8); qdomyos-zwift reads it as ×10 on the R1 Pro. Verify; unused in v1. |
-| 15, 17 | Unknown. Candidates for a handrail flag (open question 1). |
-| 16 | Last remote button |
+| 14, 17 | Not read by KS Fit; unused. A1 data fits byte 14 = target speed ×3. |
+| 15 | **Fault code**: 1–15 → E01–E15 (the manual's fault list). |
+| 16 | Last remote key: 1 mode, 2 up, 3 stop, 4 down, 0x81 long-press mode |
+
+**"Moving"** means `state == 1 || speed > 0`. The state byte can lag behind
+the speed, so every Start/Stop guard uses this test.
 | 18 | CRC |
 | 19 | `fd` |
 
@@ -171,17 +197,12 @@ steps in 14–16.
 
 **Miles conversion.** 1 mph = 16.09344 pad units.
 
-- **The pad's units are unknown, and that's a safety issue.** The pad's own
-  display is set to miles. ph4 and qdomyos-zwift both assume the speed byte
-  is 0.1 km/h, but neither says what happens in miles mode.
-  - If the pad switches to 0.1 mph, then "60" means 6.0 mph (9.7 km/h), not
-    6.0 km/h, and the clamp would be wrong by a factor of 1.6.
-  - So the protocol layer takes a `PadUnits` setting (`Km` or `Miles`), and
-    the clamp is defined in km/h and converted to pad units.
-  - Until test 6 sets `PadUnits`, the app sends no speed command above 10
-    pad units. That's ≤ 1.0 mph either way.
-  - The rest of this section assumes km/h pad units. If test 6 shows mph
-    pad units, the UI uses them directly and the clamp becomes 37 units.
+- **The wire is always metric**, even with the pad's display set to miles.
+  KS Fit ignores the pad's unit flag (settings byte 13) when reading data. It
+  treats speed as 0.1 km/h and distance as 10 m, converts mph input with
+  ×1.609344, and clamps before sending. We do the same. A manual test of
+  the Android app (2026-10-22) confirmed it: the console's mph matched the
+  app's.
 - **Speed.** Speed buttons step in 0.1 mph, converted to the nearest pad unit.
   At this resolution, every 0.1 mph step maps to a distinct pad unit and
   converts back to the same mph, so the display never drifts.
@@ -246,11 +267,28 @@ What we observed fits this model:
 - **No Bluetooth pairing or bonding.** The connection is open: macOS never
   asked for a PIN or confirmation, and reads and writes worked unencrypted.
   Nothing is stored on the pad or the OS, so there's nothing to "un-pair".
-- **"Pairing mode" is just an advertising window.** Pressing **M twice**
+- **"Pairing mode" is just advertising.** Touching **M** twice on the display
   makes the pad advertise and accept a connection. It stopped advertising
   roughly 10 minutes after our last disconnect, and a few minutes more after
   the M press. Which event starts the timer wasn't measured; you chose to
   skip it, since the design doesn't depend on it.
+- **The manual has no Bluetooth pairing procedure.**
+  - "M" is the panel's *Manual Mode* touch key.
+  - The manual's only "pairing" is for the radio remote: restart the pad and
+    hold the remote's mode button for 5 s. That's unrelated to Bluetooth.
+  - The KS Fit app's "add and bind" is purely an account step: KS Fit never
+    requests Bluetooth bonding. It picks the plain protocol for any pad with
+    service `fe00`, matches models by name prefix (`R1 Pro`, `KS-`,
+    `WalkingPad`, …), and only logs manufacturer data.
+  - **Likely explanation:** the pad advertises while awake and stops when it
+    drops into standby after idling. Touching M wakes it into manual mode.
+    Standby is also the state qdomyos-zwift calls "lock".
+  - The manual also says one press of the remote's mode button wakes the pad
+    from standby. If that makes it discoverable too, it's a handier hint than
+    M×2 (open question 3).
+- **The panel shows the connection.** Its connection light (the Wi-Fi-shaped
+  icon) flickers when no app is connected and goes off when one is. The
+  connect screen tells you this.
 - **While a client is connected,** the pad doesn't advertise, since it takes
   one client at a time. Inside the window it was found again straight after
   each disconnect. Whether it re-advertises after a disconnect once the
@@ -263,9 +301,9 @@ What we observed fits this model:
   - This is how Bluetooth LE works: a central can only connect to a device
     that is advertising. Android's connect-by-MAC has the same limit.
   - So M×2 is needed for every new connection once the window has closed.
-- **The lock is a separate thing.** After ~15 min idle, the pad locks itself
-  (state 5); switching to manual unlocks it. This concerns starting the belt,
-  not connecting.
+- **Standby while connected.** If the pad drops into standby (state 5) while
+  connected, the app wakes it by switching to manual before a Start. This is
+  what qdomyos-zwift does.
 
 Measured on 2026-10-21 (read-only, three runs):
 
@@ -273,25 +311,36 @@ Measured on 2026-10-21 (read-only, three runs):
   manufacturer data `0x0060: 57 4c 4d 0f 62 75`. A `fe00` filter finds it in
   0.1–0.5 s.
 - **Connection.** Connect takes 0.3 s and MTU is 23.
-- **Readiness.** The first status reply came 0.12 s after subscribing, to the
-  first request. This contradicts the README's ~1 s, so the session retries
-  rather than sleeping a fixed time.
+- **Readiness.** A status request sent within a few milliseconds of
+  subscribing gets no reply; this happened in all 4 spike rounds. One sent
+  ~0.1–0.3 s later is answered. That's the README's quirk, though the delay
+  is shorter than its ~1 s. The session retries every 300 ms rather than
+  sleeping a fixed time.
+- **Other services.** Besides `fe00`, the pad exposes a firmware-update
+  service (`00010203-…1912`) with a writable characteristic `…2b12`. The
+  transport only ever writes to `fe02`.
 - **Polling.** The pad sends no frames unless asked. It answered 4 of 4 polls
   at 750 ms.
 
 ### 5.2 Discovery and remembering
 
-- **Scan.** Use the `fe00` service filter (native on macOS and Android). List
-  every match, preselecting `R1 Pro`. We don't filter on name; ph4's
-  "walkingpad" filter is what missed this pad.
-- **The pad's identity is probably its MAC address.** The manufacturer data
-  `57 4c 4d 0f 62 75` looks like a MAC: pads in ph4's issues have MACs
-  `57:4C:4D:20:04:BD` and `57:4C:4E:11:79:0C`. The spike confirms this on
-  Android, where the MAC is visible.
-  - If confirmed, we remember the pad by MAC: read from manufacturer data on
-    macOS (which hides MACs), and from the device address on Android.
+- **Scan.** Use the `fe00` service filter. List every match, preselecting
+  `R1 Pro`. We don't filter on name; ph4's "walkingpad" filter is what missed
+  this pad.
+  - The spike found that `blec` 0.18 always scans unfiltered and applies the
+    filter in software every 200 ms.
+  - That's fine in the foreground. But Android suspends unfiltered scans
+    while the screen is off.
+  - So v1 only scans while the connect screen is visible. Background
+    reconnection (Phase 2 foreground service) needs a native filter: a small
+    patch or upstream fix, since blec's Kotlin side already supports one.
+- **The pad's identity is its MAC address (confirmed by the spike).** Android
+  sees the address `57:4C:4D:0F:62:75`, which is exactly the manufacturer
+  data `57 4c 4d 0f 62 75`.
+  - We remember the pad by MAC: read from manufacturer data on macOS (which
+    hides MACs), and from the device address on Android.
   - That gives the same ID on the Mac and the phone.
-  - Fallback: the CoreBluetooth UUID on macOS (specific to that Mac).
+  - The CoreBluetooth UUID is kept only as secondary info.
 - **Scan before connecting,** on every platform.
   - The README's macOS rule is really a bleak limitation: CoreBluetooth itself
     can connect from a remembered identifier.
@@ -300,8 +349,8 @@ Measured on 2026-10-21 (read-only, three runs):
     nothing.
 - **Connect screen.** The pad usually isn't advertising when you open the
   app.
-  - The screen says "Press M twice on the pad" and keeps scanning (with the
-    `fe00` filter) while it's open.
+  - The screen says "Touch M on the pad's display to wake it" and keeps
+    scanning (with the `fe00` filter) while it's open.
   - It connects to the remembered pad the moment it appears. There's no
     scan timeout and no *Scan again* button.
   - Scanning stops when the screen closes or the app goes to the
@@ -334,8 +383,8 @@ Measured on 2026-10-21 (read-only, three runs):
   - Drop every queued command; they are never replayed.
   - Scan and reconnect with backoff (1, 2, 4 … 15 s) for 1 minute. This only
     works if the pad is still advertising.
-  - After that, show the connect screen with "Connection lost. Press M twice
-    to reconnect." It keeps scanning, as in §5.2.
+  - After that, show the connect screen with "Connection lost. Touch M on
+    the pad to reconnect." It keeps scanning, as in §5.2.
   - After reconnecting, run the handshake and take state from the pad.
   - **Never send start, speed or mode automatically after a reconnect.**
 - **On app launch:** if the remembered pad is found, connect to it. Never
@@ -368,18 +417,25 @@ Measured on 2026-10-21 (read-only, three runs):
   - Switch mode (manual / auto / standby).
 - **Live stats:** speed (mph), time, distance (mi), steps, belt state, and
   the start countdown.
+- **Fault display:** the E01–E15 code (status byte 15) and fault state 4,
+  shown prominently.
 - **Units:** miles by default, with a km setting (it's only a conversion).
 - **Desktop:** a compact window (~360×560) with keyboard shortcuts.
 
 **Phase 2:**
 
+- **Pad info and limits.** Send info + time (`a5`) and the settings query
+  (`a6 00`). Clamp to the pad's own minimum, maximum and walking maximum
+  (`maxW`) instead of fixed numbers. These aren't belt-moving commands, but
+  I'll still ask before first sending them.
 - **Running mode / handrail,** raising the cap from 6.0 to 10 km/h (3.7 → 6.2
-  mph). It depends on finding a handrail flag in the status frame (open
-  question 1), or else on a manual "handrail up" switch.
+  mph).
+  - The handrail isn't in the status frame. It's property 0x15, readable with
+    `f7 b1` only if the pad's protocol version (info reply byte 16) is ≥ 20.
+  - Older firmware falls back to a manual "handrail up" switch.
 - **Preferences:** max speed, start speed, intelligent start, sensitivity,
-  display, child lock, units, target. Each is verified on the device first.
-- **Reading the pad's settings,** using QWalkingPad's documented query (GPL,
-  so used as documentation only).
+  display, child lock, units, target, and no-load auto-stop (property 0x1e,
+  protocol ≥ 20). Each is verified on the device first.
 - **History / last record.** With the KingSmith app out of the picture,
   there's no sync to protect.
 - **Session logging** to local JSONL/CSV, and **calorie estimates** from a
@@ -401,24 +457,32 @@ polish.
   - It is never disabled while a link exists.
   - Desktop: `Esc` and `Space` both mean Stop, and never Start.
   - Nothing covers it.
-- **Stop never uses the toggle blindly.** On R1 Pro-family pads,
-  `f7 a2 04 01` toggles start/pause. qdomyos-zwift users saw a "stop" restart
-  a stopped belt, and a retried stop restart a belt that was still slowing
-  down (it took 21 s to stop).
-  - Stop pre-empts the queue and sends an idempotent command: speed 0, or
-    standby if speed 0 turns out not to stop the R1 Pro. Which one is decided
-    by supervised test 1.
-  - It is re-sent each slot until confirmed. Confirmed means status shows the
-    speed falling or the belt leaving the running state.
-  - The toggle is used for Stop only if test 1 shows nothing else works. Even
-    then: only when the belt is running at steady speed, at most once per
-    press, and never retried automatically.
+- **Stop never uses the toggle blindly.** `f7 a2 04 01` toggles start/pause.
+  qdomyos-zwift users saw a "stop" restart a stopped belt, and a retried stop
+  restart a belt that was still slowing down (it took 21 s to stop).
+  - **Strategies.** Stop pre-empts the queue and uses one of three
+    strategies, a setting chosen by supervised test 1:
+    - **Standby** (`a2 02 02`): idempotent; on the A1 it slowed the belt.
+      It's the default. The 2026-10-22 manual test confirmed it stops the
+      belt; test 1 still times it against the other two.
+    - **Speed 0**: idempotent; ph4's stop, but KS Fit never uses it.
+    - **Guarded toggle**: what KS Fit does.
+  - **Idempotent strategies** are re-sent each slot until confirmed.
+    Confirmed means status shows the speed falling or the belt no longer
+    moving.
+  - **Guarded toggle** is sent only when the belt is moving (§4.1) and no
+    earlier stop is in progress, at most once per press, and never retried.
+    While the speed is falling, the UI shows "Slowing down…", and further
+    presses send nothing. KS Fit does the same.
   - If Stop isn't confirmed within 5 s, the app shows "Stop not confirmed —
-    use the remote or the pad's button."
+    use the remote or pull the safety key."
+- **Faults.** Fault state 4 or a non-zero fault code (byte 15) shows a banner
+  with the code (E01–E15) and blocks Start until it clears.
 - **Start is sent at most once per press.**
-  - It's only offered when the belt is idle or locked. From the locked state
-    (5) the app switches to manual first and waits for confirmation.
-  - The app shows the countdown (state 9).
+  - It's only offered when the belt isn't moving and has no fault.
+  - If the mode is standby or "newer" (2 or 3), the app switches to manual
+    first and waits for status to confirm. KS Fit does the same.
+  - The app shows the countdown (states 6–9).
   - If the belt isn't counting down or running within 5 s, the app says
     "Start not confirmed" and waits for another press. It never retries by
     itself, because a retry could toggle the belt off or on unexpectedly.
@@ -433,11 +497,19 @@ polish.
     selected any time.
   - Nothing that moves the belt is ever sent automatically: not on launch, not
     on reconnect, and not from a replayed queue.
+- **The safety key is the real emergency stop.** It's the pad's magnetic key,
+  clipped to your clothing.
+  - Pulling it stops the belt immediately, and the belt doesn't restart by
+    itself.
+  - It works without the app or Bluetooth, so it covers app crashes and lost
+    links.
+  - The first-run screen asks you to clip it on.
 - **Disconnect or crash.**
   - Working assumption: **the belt keeps running at its current speed**,
-    because nothing tells the pad to stop. Supervised test 4 checks this.
+    because nothing tells the pad to stop. Supervised test 3 checks this.
   - The first-run screen and the "connection lost" banner say: "If the app
-    loses the pad, the belt keeps going — use the remote or step off."
+    loses the pad, the belt keeps going. Use the remote, pull the safety key,
+    or step off."
 - **Leaving or closing the app.**
   - **Desktop.** Closing the window (or ⌘Q) ends the app and drops the
     Bluetooth link, even if the belt is moving. **The belt keeps running**:
@@ -451,29 +523,36 @@ polish.
     - The Phase 2 foreground service makes this much rarer.
 - **Device tests need your authorization.** Before each test session I'll ask
   in the thread, listing the exact commands.
-  - Motion tests run with you present.
-  - Any speed command is ≤ 10 pad units, which is ≤ 1.0 mph whatever the
-    pad's units turn out to be.
-  - Test 6 runs first.
+  - Motion tests run with you present, at ≤ 1.0 mph.
 
   | # | Test | Sends | Why |
   |---|---|---|---|
-  | 6 | Units: start, set 10 pad units, read the console | start, speed | Does miles mode change BLE units? Sets `PadUnits`. |
-  | 1 | Stop: speed 0, then standby | start, speed 0, mode | Picks the idempotent Stop |
-  | 2 | Start toggle: send start/pause once while running | start | Confirms the toggle on this pad |
-  | 3 | Lock/unlock: wait for state 5, switch to manual | mode | Unlock path |
-  | 4 | Kill the app mid-run; turn Bluetooth off mid-run | start, speed | Disconnect behaviour |
-  | 5 | Commands closer together than 700 ms | speed | Spacing rule |
-  | 7 | Read-only: raise/lower the handrail while polling | status only | Handrail flag (open question 1) |
+  | 1 | Stop: from ~1 mph, try standby, then speed 0, then the guarded toggle | start, mode, speed, toggle | Picks the Stop strategy; times the deceleration |
+  | 2 | Start without the KS Fit init sequence; start from standby | mode, start | Confirms the Start flow |
+  | 3 | Kill the app mid-run; turn Bluetooth off mid-run | start, speed | Disconnect behaviour |
+  | 4 | Commands closer together than 700 ms | speed | Spacing rule |
+  | 5 | Units: set 1.0 mph (16 units), read the console | speed | Confirms the wire is km/h with the display in miles |
+
+  Test 5 is done (manual test, 2026-10-22).
+
+  The handrail test from the previous revision is dropped: KS Fit shows the
+  handrail isn't in the status frame (§6).
 
 ## 8. Open questions
 
-1. **Handrail:** no reference documents a handrail flag. Bytes 15 and 17 of
-   the status frame are unexplained and are the candidates. Test 7 was
-   started but stopped before the pad connected. For v1 we assume the
-   handrail is down (walking range) and revisit it in Phase 2.
-2. **Pad units:** the pad's display shows miles. Test 6 decides whether the
-   BLE speed byte follows it (§4.1). It needs your go-ahead, since it moves
-   the belt at ≤ 1.0 mph.
+1. **Waking the pad:** when it isn't discoverable, is the Standby (⏻)
+   indicator lit? Does one press of the remote's mode button make it
+   discoverable? If so, the connect-screen hint can say "press the mode button
+   on the remote".
 
-Settled: running mode / handrail is Phase 2; v1 caps at 6.0 km/h (3.7 mph).
+2. **Supervised tests 1–5 (§7):** may I run them once the app is built? I'll
+   ask again with the exact commands at the time.
+
+Settled:
+
+- Running mode / handrail is Phase 2. v1 assumes the handrail is down and
+  caps speed at 6.0 km/h (3.7 mph), the manual's walking maximum.
+- The wire is metric whatever the display unit (KS Fit), confirmed on the
+  pad.
+- v1 works on the real pad from Android (manual test, 2026-10-22): connect,
+  Start, speed changes and Stop (standby).
