@@ -18,15 +18,20 @@ jobs:
   android:
     name: Android APK (ARM64)
     runs-on: [self-hosted, Linux, X64, docker]
-    container: ubuntu:24.04
     timeout-minutes: 60
     env:
       CI: 'true'
     steps:
       - name: Install build prerequisites
+        shell: bash
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config unzip zip
+          if [ "$(id -u)" -eq 0 ]; then
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config unzip zip
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config unzip zip
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,12 +62,15 @@ jobs:
 
       - run: npm ci
 
-      - name: Create disposable sideload signing key
+      - name: Ensure sideload signing key
+        shell: bash
         run: |
           mkdir -p "$HOME/.android"
-          keytool -genkeypair -noprompt -keystore "$HOME/.android/debug.keystore" \
-            -storepass android -keypass android -alias androiddebugkey \
-            -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -noprompt -keystore "$HOME/.android/debug.keystore" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+          fi
 
       - name: Build APK
         run: npm run tauri -- android build --ci --target aarch64 --apk

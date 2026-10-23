@@ -13,14 +13,16 @@ pull requests into `main`, and manual dispatch. Download its artifacts from
 the workflow run page (retained for 14 days):
 
 - `kingsmith-android-arm64`: release APK for ARM64 Android devices, built on
-  the self-hosted Linux/X64 runner with the `docker` label in an Ubuntu container.
+  the self-hosted Linux/X64 runner with the `docker` label. That runner already
+  runs in a container; the workflow installs tools directly without nested Docker.
 - `kingsmith-macos-arm64`: zipped Apple Silicon `.app`, built on a GitHub-hosted
   Mac. Unzip before opening; it is not Developer ID signed or notarized.
 
-The APK uses a disposable debug signing key generated for each run. It can be
-sideloaded, but cannot update an installation signed by a different key
-(including local builds and earlier CI runs). Uninstalling first removes app
-settings. These builds do not publish GitHub Releases or install onto devices.
+The APK uses the runner's debug signing key (created if missing and reused
+while the runner's home persists). It can be sideloaded, but cannot update an
+installation signed by a different key, such as a local build. Uninstalling
+first removes app settings. These builds do not publish GitHub Releases or
+install onto devices.
 
 ## Device
 
