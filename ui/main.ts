@@ -271,7 +271,7 @@ function render(s: Snapshot): void {
   if (ready) renderDash(s);
   else renderConnect(s);
 
-  // Start/Stop: one button in the footer. It's Stop whenever the belt might
+  // Start/Stop: one button below the mode row. It's Stop whenever the belt might
   // be moving, and Stop is enabled whenever a link exists.
   const asStart = s.controls.showStart;
   if (asStart && !showingStart) startShownAt = performance.now();
