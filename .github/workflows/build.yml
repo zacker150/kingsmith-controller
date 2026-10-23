@@ -111,7 +111,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - run: npm ci
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --features mock
 
       - name: Build app
         run: npm run tauri -- build --target aarch64-apple-darwin --bundles app --ci
