@@ -6,6 +6,22 @@ A controller for a KingSmith WalkingPad R1 Pro over Bluetooth LE.
 
 Created in [T3 Code](https://t3.codes).
 
+## CI builds
+
+The **Build apps** GitHub Actions workflow runs on pushes to `main` and `v1`,
+pull requests into `main`, and manual dispatch. Download its artifacts from
+the workflow run page (retained for 14 days):
+
+- `kingsmith-android-arm64`: release APK for ARM64 Android devices, built on
+  the self-hosted Linux/X64 runner with the `docker` label in an Ubuntu container.
+- `kingsmith-macos-arm64`: zipped Apple Silicon `.app`, built on a GitHub-hosted
+  Mac. Unzip before opening; it is not Developer ID signed or notarized.
+
+The APK uses a disposable debug signing key generated for each run. It can be
+sideloaded, but cannot update an installation signed by a different key
+(including local builds and earlier CI runs). Uninstalling first removes app
+settings. These builds do not publish GitHub Releases or install onto devices.
+
 ## Device
 
 | | |
