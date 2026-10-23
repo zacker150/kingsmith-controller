@@ -29,8 +29,7 @@
           </p>
           <p id="looking" class="sub" hidden></p>
           <div id="safety" class="safety" hidden>
-            Clip the safety key to your clothing before you walk. If the app loses the pad, the belt
-            keeps going. Use the remote, pull the safety key, or step off.
+            Clip the safety key to your clothing before you walk.
           </div>
           <div id="problem" class="problem" hidden>
             <p id="problem-text"></p>
@@ -81,19 +80,17 @@
           </form>
 
           <div class="modes" role="group" aria-label="Mode">
+            <button type="button" data-mode="standby">Standby</button>
             <button type="button" data-mode="manual">Manual</button>
             <button type="button" data-mode="auto">Auto</button>
-            <button type="button" data-mode="standby">Standby</button>
           </div>
-
-          <button id="start" type="button" class="start">Start</button>
         </section>
       </main>
 
       <footer>
-        <button id="stop" type="button" class="stop" disabled>
-          <span id="stop-label">STOP</span>
-          <small class="keys">Esc / Space</small>
+        <button id="toggle" type="button" class="toggle stop" disabled>
+          <span id="toggle-label">STOP</span>
+          <small id="toggle-keys" class="keys">Esc / Space</small>
         </button>
       </footer>
     </div>

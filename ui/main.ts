@@ -39,9 +39,8 @@ interface Snapshot {
   discovered: Advertisement[];
   stats: Stats | null;
   units: { display: DisplayUnits; speedUnit: string; distanceUnit: string; minSpeed: number; maxSpeed: number };
-  controls: { stop: boolean; start: boolean; speed: boolean; manual: boolean; auto: boolean; standby: boolean; disconnect: boolean };
+  controls: { stop: boolean; start: boolean; showStart: boolean; speed: boolean; manual: boolean; auto: boolean; standby: boolean; disconnect: boolean };
   stopping: boolean;
-  stopUnconfirmed: boolean;
   slowing: boolean;
   starting: boolean;
   notice: { level: "info" | "warning" | "error"; text: string } | null;
@@ -65,8 +64,6 @@ type Intent =
   | { type: "setDisplayUnits"; units: DisplayUnits }
   | { type: "setVisible"; visible: boolean };
 
-const SAFETY = "If the app loses the pad, the belt keeps going. Use the remote, pull the safety key, or step off.";
-
 // --- plumbing --------------------------------------------------------------
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -78,6 +75,13 @@ function send(intent: Intent): void {
 }
 
 const stop = () => send({ type: "stop" });
+
+// The Start/Stop button flips to Start once the belt has stopped. Taps on Start
+// in the first second after that are ignored, so a double tap on Stop can't
+// start the belt again.
+const START_GUARD_MS = 1000;
+let showingStart = false;
+let startShownAt = 0;
 
 // --- rendering -------------------------------------------------------------
 
@@ -136,14 +140,11 @@ function renderBanner(s: Snapshot): void {
   const el = $("banner");
   let text = "";
   let level = "warning";
-  if (s.stopUnconfirmed) {
-    text = "Stop not confirmed — use the remote, the pad's button or the safety key.";
-    level = "error";
-  } else if (s.notice) {
+  if (s.notice) {
     text = s.notice.text;
     level = s.notice.level;
   } else if (s.link === "reconnecting" || (s.linkLost && !s.hasLink)) {
-    text = `Connection lost. Touch M on the pad to reconnect. ${SAFETY}`;
+    text = "Connection lost. Touch M on the pad to reconnect.";
   } else if (s.stale) {
     text = "No status from the pad (link stale). Stop still works.";
   }
@@ -156,7 +157,7 @@ function renderConnect(s: Snapshot): void {
   const firstRun = !s.remembered;
   $("connect-title").textContent =
     s.link === "connecting" || s.link === "handshake" ? `Connecting to ${padLabel(s.pad)}…` : "Connect to your WalkingPad";
-  show($("safety"), firstRun || s.linkLost);
+  show($("safety"), firstRun);
 
   const looking = $("looking");
   if (s.remembered && s.link !== "idle") {
@@ -250,9 +251,6 @@ function renderDash(s: Snapshot): void {
     b.disabled = !c[mode];
     b.classList.toggle("active", st?.mode === mode);
   });
-  const start = $<HTMLButtonElement>("start");
-  start.disabled = !c.start;
-  start.textContent = s.starting ? "Starting…" : "Start";
 }
 
 function render(s: Snapshot): void {
@@ -273,10 +271,16 @@ function render(s: Snapshot): void {
   if (ready) renderDash(s);
   else renderConnect(s);
 
-  // Stop: always visible, enabled whenever a link exists.
-  const stopBtn = $<HTMLButtonElement>("stop");
-  stopBtn.disabled = !s.controls.stop;
-  $("stop-label").textContent = s.stopping ? "STOPPING…" : "STOP";
+  // Start/Stop: one button in the footer. It's Stop whenever the belt might
+  // be moving, and Stop is enabled whenever a link exists.
+  const asStart = s.controls.showStart;
+  if (asStart && !showingStart) startShownAt = performance.now();
+  showingStart = asStart;
+  const toggle = $<HTMLButtonElement>("toggle");
+  toggle.className = `toggle ${asStart ? "start" : "stop"}`;
+  toggle.disabled = asStart ? !s.controls.start : !s.controls.stop;
+  $("toggle-label").textContent = asStart ? "START" : s.stopping ? "STOPPING…" : "STOP";
+  show($("toggle-keys"), !asStart);
 }
 
 // --- wiring ----------------------------------------------------------------
@@ -291,8 +295,10 @@ function onClick(id: string, f: () => void): void {
   });
 }
 
-onClick("stop", stop);
-onClick("start", () => send({ type: "start" }));
+onClick("toggle", () => {
+  if (!showingStart) stop();
+  else if (performance.now() - startShownAt >= START_GUARD_MS) send({ type: "start" });
+});
 onClick("units", () =>
   send({ type: "setDisplayUnits", units: snap?.units.display === "miles" ? "km" : "miles" }),
 );

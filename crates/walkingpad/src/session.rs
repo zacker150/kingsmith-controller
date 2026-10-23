@@ -140,7 +140,8 @@ pub struct Timing {
     pub handshake_timeout: Duration,
     /// Missed status replies in a row before the link counts as stale.
     pub stale_after_missed: u32,
-    /// Stop not confirmed this long after the press: warn.
+    /// Stop not confirmed this long after the press: log it, and let a new
+    /// press send the toggle again.
     pub stop_confirm: Duration,
     /// Start not confirmed this long after sending: give up, never retry.
     pub start_confirm: Duration,
@@ -341,6 +342,10 @@ pub struct Controls {
     /// Always true while a link exists.
     pub stop: bool,
     pub start: bool,
+    /// The Start/Stop button shows Start: the belt is stopped and nothing is
+    /// starting or stopping. Otherwise it shows Stop. Start may still be
+    /// disabled (fault, mode change in flight).
+    pub show_start: bool,
     pub speed: bool,
     pub manual: bool,
     pub auto: bool,
@@ -404,7 +409,6 @@ pub struct Snapshot {
     pub units: UnitsView,
     pub controls: Controls,
     pub stopping: bool,
-    pub stop_unconfirmed: bool,
     /// The belt is slowing down after a stop: "Slowing down…".
     pub slowing: bool,
     pub starting: bool,
@@ -518,7 +522,6 @@ fn placeholder_snapshot() -> Snapshot {
         },
         controls: Controls::default(),
         stopping: false,
-        stop_unconfirmed: false,
         slowing: false,
         starting: false,
         notice: None,
@@ -610,7 +613,7 @@ struct StopState {
     ref_speed: Option<u8>,
     first_sent: Option<Instant>,
     sends: u32,
-    warned: bool,
+    timed_out: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -683,8 +686,6 @@ fn notice(level: Level, text: impl Into<String>) -> Option<Notice> {
         text: text.into(),
     })
 }
-
-const SAFETY: &str = "Use the remote, pull the safety key, or step off.";
 
 impl<T: Transport> Session<T> {
     /// Runs until every [`SessionHandle`] is dropped, then disconnects.
@@ -773,7 +774,7 @@ impl<T: Transport> Session<T> {
                     at(w);
                 }
                 if let Some(s) = &self.link.stop
-                    && !s.warned
+                    && !s.timed_out
                 {
                     at(s.pressed + t.stop_confirm);
                 }
@@ -913,39 +914,37 @@ impl<T: Transport> Session<T> {
             _ => {}
         }
         if let Some(stop) = &mut self.link.stop
-            && !stop.warned
+            && !stop.timed_out
             && now >= stop.pressed + t.stop_confirm
         {
-            stop.warned = true;
+            stop.timed_out = true;
             if stop.kind == StopKind::Toggle {
                 // Never re-sent; a new press may try again under guard.
                 self.link.stop = None;
             }
-            self.notice = notice(
-                Level::Error,
-                "Stop not confirmed — use the remote, the pad's button or the safety key.",
-            );
             self.log("stop not confirmed within 5 s");
         }
         if let Some(flow) = &self.link.start {
             let (expired, text) = match flow.phase {
-                StartPhase::Sent { at } => (
-                    now >= at + t.start_confirm,
-                    "Start not confirmed. Press Start again if the belt should start.",
-                ),
+                // You can see whether the belt started, so no notice.
+                StartPhase::Sent { at } => (now >= at + t.start_confirm, None),
                 StartPhase::Waking { .. } => (
                     now >= flow.pressed + t.start_confirm,
-                    "The pad didn't wake from standby. Touch M on the pad, then press Start.",
+                    Some("The pad didn't wake from standby. Touch M on the pad, then press Start."),
                 ),
                 StartPhase::Ready => (
                     now >= flow.pressed + t.start_confirm,
-                    "Start not sent: no fresh status from the pad.",
+                    Some("Start not sent: no fresh status from the pad."),
                 ),
             };
             if expired {
                 self.link.start = None;
-                self.notice = notice(Level::Warning, text);
-                self.log(text);
+                if let Some(text) = text {
+                    self.notice = notice(Level::Warning, text);
+                    self.log(text);
+                } else {
+                    self.log("start not confirmed within 5 s");
+                }
             }
         }
         if let Some((_, set)) = self.link.target_speed
@@ -1303,14 +1302,9 @@ impl<T: Transport> Session<T> {
         {
             let falling = s.is_moving() && stop.ref_speed.is_some_and(|r| s.speed < r);
             if !s.is_active() || falling {
-                let was_warned = stop.warned;
                 l.stop = None;
                 l.slowing = s.is_moving();
-                self.notice = if was_warned {
-                    notice(Level::Info, "Stop confirmed.")
-                } else {
-                    None
-                };
+                self.notice = None;
                 self.log("stop confirmed");
             } else if stop.ref_speed.is_none() || stop.ref_speed == Some(0) {
                 stop.ref_speed = Some(s.speed);
@@ -1416,10 +1410,7 @@ impl<T: Transport> Session<T> {
 
     fn on_stop(&mut self, now: Instant) {
         if self.current_link().is_none() {
-            self.notice = notice(
-                Level::Warning,
-                format!("Not connected to the pad. {SAFETY}"),
-            );
+            self.notice = notice(Level::Warning, "Not connected to the pad.");
             return;
         }
         if self.link.start.take().is_some() {
@@ -1439,10 +1430,7 @@ impl<T: Transport> Session<T> {
                     return;
                 }
                 let Some(s) = self.link.status else {
-                    self.notice = notice(
-                        Level::Warning,
-                        format!("No status from the pad yet. {SAFETY}"),
-                    );
+                    self.notice = notice(Level::Warning, "No status from the pad yet.");
                     return;
                 };
                 if s.belt.is_countdown() && !s.is_moving() {
@@ -1467,7 +1455,7 @@ impl<T: Transport> Session<T> {
                 ref_speed: self.link.status.map(|s| s.speed),
                 first_sent: None,
                 sends: 0,
-                warned: false,
+                timed_out: false,
             });
         }
     }
@@ -1724,14 +1712,11 @@ impl<T: Transport> Session<T> {
         let mode_busy = l.queued_mode.is_some()
             || l.last_write
                 .is_some_and(|(_, w)| matches!(w, Write::Mode(_)));
+        let show_start = ready && stopped && l.stop.is_none() && l.start.is_none();
         let controls = Controls {
             stop: has_link,
-            start: ready
-                && l.stop.is_none()
-                && l.start.is_none()
-                && !mode_busy
-                && stopped
-                && !fault,
+            start: show_start && !mode_busy && !fault,
+            show_start,
             speed: ready && l.stop.is_none() && l.start.is_none() && can_speed,
             manual: ready && l.status.is_some(),
             auto: ready && l.status.is_some() && stopped && l.stop.is_none(),
@@ -1763,11 +1748,6 @@ impl<T: Transport> Session<T> {
             },
             controls,
             stopping: l.stop.is_some(),
-            stop_unconfirmed: l.stop.as_ref().is_some_and(|s| s.warned)
-                || self
-                    .notice
-                    .as_ref()
-                    .is_some_and(|n| n.text.starts_with("Stop not confirmed")),
             slowing: l.status.is_some_and(|s| self.stopping_belt(&s)),
             starting: l.start.is_some(),
             notice: self.notice.clone(),

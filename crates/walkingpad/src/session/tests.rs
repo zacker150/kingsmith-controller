@@ -657,8 +657,7 @@ async fn toggle_stop_is_never_retried_automatically() {
     sleep(2_000).await;
     let t = Instant::now();
     h.send(Intent::Stop);
-    let snap = h.wait("warning", 6_000, |s| s.stop_unconfirmed).await;
-    assert!(!snap.stopping);
+    h.wait("stop given up", 6_000, |s| !s.stopping).await;
     sleep(20_000).await;
     assert_eq!(h.count_since(t, &WireCommand::StartPause), 1);
     // A new press may send one more.
@@ -702,8 +701,25 @@ async fn stop_defaults_to_standby() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unconfirmed_stop_is_resent_and_warns_after_5s_but_never_toggles() {
-    // A pad on which speed 0 does nothing (what supervised test 1 might find).
+async fn start_stop_button_shows_start_only_while_stopped() {
+    let h = H::ready(config(), PadConfig::default()).await;
+    h.wait("start shown", 2_000, |s| {
+        s.controls.show_start && s.controls.start
+    })
+    .await;
+    h.fake.with_pad(|p| p.set_running(30));
+    h.wait("stop shown", 2_000, |s| !s.controls.show_start)
+        .await;
+    h.send(Intent::Stop);
+    let snap = h.wait("stopping", 100, |s| s.stopping).await;
+    assert!(!snap.controls.show_start);
+    h.wait("start shown again", 30_000, |s| s.controls.show_start)
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unconfirmed_stop_is_resent_but_never_toggles() {
+    // A pad on which speed 0 does nothing.
     let pad = PadConfig {
         speed_zero_stops: false,
         ..PadConfig::default()
@@ -713,12 +729,10 @@ async fn unconfirmed_stop_is_resent_and_warns_after_5s_but_never_toggles() {
     sleep(1_000).await;
     let t = Instant::now();
     h.send(Intent::Stop);
-    sleep(4_900).await;
-    assert!(!h.s.snapshot().stop_unconfirmed);
-    let snap = h.wait("warning", 200, |s| s.stop_unconfirmed).await;
-    let n = snap.notice.unwrap();
-    assert_eq!(n.level, Level::Error);
-    assert!(n.text.starts_with("Stop not confirmed"));
+    sleep(5_100).await;
+    let snap = h.s.snapshot();
+    assert!(snap.stopping);
+    assert!(snap.notice.is_none(), "no notice: you can see the belt");
     assert!(snap.controls.stop);
     sleep(5_000).await;
     // Re-sent every other slot (Stop, status, Stop, …), ~1.45 s apart.
@@ -826,14 +840,8 @@ async fn unconfirmed_start_is_never_retried() {
     let h = H::ready(config(), pad).await;
     let t = Instant::now();
     h.send(Intent::Start);
-    let snap = h
-        .wait("start not confirmed", 7_000, |s| {
-            s.notice
-                .as_ref()
-                .is_some_and(|n| n.text.starts_with("Start not confirmed"))
-        })
-        .await;
-    assert!(!snap.starting);
+    let snap = h.wait("start given up", 7_000, |s| !s.starting).await;
+    assert!(snap.notice.is_none(), "no notice: you can see the belt");
     assert!(snap.controls.start, "a new press is allowed");
     sleep(30_000).await;
     assert_eq!(h.count_since(t, &WireCommand::StartPause), 1);

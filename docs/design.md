@@ -170,8 +170,8 @@ Commands. Bytes are computed with `pad.py`'s `fix_crc`.
 
 On connect, KS Fit queues info + time, status, settings and a record sync
 (`a7 aa ff`), but it doesn't wait for any replies before sending control
-commands. Our pad answers status without them. v1 sends none of them;
-supervised test 2 checks that control works without them.
+commands. Our pad answers status without them. v1 sends none of them, and
+the 2026-10-22 manual test showed Start and speed work without them.
 
 Status frame (`f8 a2`, 20 bytes):
 
@@ -283,9 +283,10 @@ What we observed fits this model:
   - **Likely explanation:** the pad advertises while awake and stops when it
     drops into standby after idling. Touching M wakes it into manual mode.
     Standby is also the state qdomyos-zwift calls "lock".
-  - The manual also says one press of the remote's mode button wakes the pad
-    from standby. If that makes it discoverable too, it's a handier hint than
-    M×2 (open question 3).
+  - While the pad isn't discoverable, its Standby (⏻) light flashes now and
+    then, which fits this explanation.
+  - The manual says the remote's mode button also wakes the pad, but you have
+    no remote, so the connect screen only mentions M.
 - **The panel shows the connection.** Its connection light (the Wi-Fi-shaped
   icon) flickers when no app is connected and goes off when one is. The
   connect screen tells you this.
@@ -411,10 +412,9 @@ Measured on 2026-10-21 (read-only, three runs):
 - **Connection:** M×2 guidance, scan, connect, remember, reconnect,
   disconnect, and a connection status indicator.
 - **Belt control:**
-  - Start, including auto-unlock from state 5.
-  - Stop.
+  - Start and Stop, on one button (§7), including auto-unlock from state 5.
   - Set speed (±0.1 and ±0.5 mph buttons, 3 editable presets).
-  - Switch mode (manual / auto / standby).
+  - Switch mode: Standby, Manual, Auto, in the pad's order.
 - **Live stats:** speed (mph), time, distance (mi), steps, belt state, and
   the start countdown.
 - **Fault display:** the E01–E15 code (status byte 15) and fault state 4,
@@ -452,19 +452,23 @@ The app moves a belt someone is standing on, so these are requirements, not
 polish.
 
 - **Stop is always reachable.**
-  - A large red *Stop* sits in the same place on every screen and in every
-    connection state, including connecting, stale and reconnecting.
-  - It is never disabled while a link exists.
+  - One large Start/Stop button sits in the same place on every screen and in
+    every connection state, including connecting, stale and reconnecting.
+  - It's a red *Stop* unless the belt is known to be stopped and nothing is
+    starting or stopping. Only then does it turn into a green *Start*.
+  - Taps on Start in the first second after the switch are ignored, so a
+    double tap on Stop can't restart the belt.
+  - Stop is never disabled while a link exists.
   - Desktop: `Esc` and `Space` both mean Stop, and never Start.
   - Nothing covers it.
 - **Stop never uses the toggle blindly.** `f7 a2 04 01` toggles start/pause.
   qdomyos-zwift users saw a "stop" restart a stopped belt, and a retried stop
   restart a belt that was still slowing down (it took 21 s to stop).
   - **Strategies.** Stop pre-empts the queue and uses one of three
-    strategies, a setting chosen by supervised test 1:
+    strategies, chosen by the `stopMethod` setting:
     - **Standby** (`a2 02 02`): idempotent; on the A1 it slowed the belt.
       It's the default. The 2026-10-22 manual test confirmed it stops the
-      belt; test 1 still times it against the other two.
+      belt.
     - **Speed 0**: idempotent; ph4's stop, but KS Fit never uses it.
     - **Guarded toggle**: what KS Fit does.
   - **Idempotent strategies** are re-sent each slot until confirmed.
@@ -474,8 +478,6 @@ polish.
     earlier stop is in progress, at most once per press, and never retried.
     While the speed is falling, the UI shows "Slowing down…", and further
     presses send nothing. KS Fit does the same.
-  - If Stop isn't confirmed within 5 s, the app shows "Stop not confirmed —
-    use the remote or pull the safety key."
 - **Faults.** Fault state 4 or a non-zero fault code (byte 15) shows a banner
   with the code (E01–E15) and blocks Start until it clears.
 - **Start is sent at most once per press.**
@@ -483,9 +485,11 @@ polish.
   - If the mode is standby or "newer" (2 or 3), the app switches to manual
     first and waits for status to confirm. KS Fit does the same.
   - The app shows the countdown (states 6–9).
-  - If the belt isn't counting down or running within 5 s, the app says
-    "Start not confirmed" and waits for another press. It never retries by
-    itself, because a retry could toggle the belt off or on unexpectedly.
+  - If the belt isn't counting down or running within 5 s, the app gives up
+    and waits for another press. It never retries by itself, because a retry
+    could toggle the belt off or on unexpectedly.
+  - The app shows no "not confirmed" notices for Start or Stop: you can see
+    whether the belt is moving.
 - **Speeds are clamped in the protocol layer.**
   - v1 allows 0.5–6.0 km/h (0.3–3.7 mph), the walking range with the handrail
     down.
@@ -499,6 +503,9 @@ polish.
     on reconnect, and not from a replayed queue.
 - **The safety key is the real emergency stop.** It's the pad's magnetic key,
   clipped to your clothing.
+  - You have no remote, and the manual documents no panel key that stops a
+    running belt. So the app and the safety key are the only ways to stop
+    it.
   - Pulling it stops the belt immediately, and the belt doesn't restart by
     itself.
   - It works without the app or Bluetooth, so it covers app crashes and lost
@@ -506,47 +513,22 @@ polish.
   - The first-run screen asks you to clip it on.
 - **Disconnect or crash.**
   - Working assumption: **the belt keeps running at its current speed**,
-    because nothing tells the pad to stop. Supervised test 3 checks this.
-  - The first-run screen and the "connection lost" banner say: "If the app
-    loses the pad, the belt keeps going. Use the remote, pull the safety key,
-    or step off."
+    because nothing tells the pad to stop.
 - **Leaving or closing the app.**
   - **Desktop.** Closing the window (or ⌘Q) ends the app and drops the
     Bluetooth link, even if the belt is moving. **The belt keeps running**:
-    there's no prompt and no automatic stop (your choice). Use the remote
-    afterwards.
+    there's no prompt and no automatic stop (your choice). Reopen the app or
+    pull the safety key to stop it.
   - **Android.**
     - Switching apps or locking the screen leaves the app running and
       connected for as long as OxygenOS allows.
     - Swiping it away from recents, or the OS killing it, gives the app no
       reliable chance to act. That's the disconnect case above.
     - The Phase 2 foreground service makes this much rarer.
-- **Device tests need your authorization.** Before each test session I'll ask
-  in the thread, listing the exact commands.
-  - Motion tests run with you present, at ≤ 1.0 mph.
-
-  | # | Test | Sends | Why |
-  |---|---|---|---|
-  | 1 | Stop: from ~1 mph, try standby, then speed 0, then the guarded toggle | start, mode, speed, toggle | Picks the Stop strategy; times the deceleration |
-  | 2 | Start without the KS Fit init sequence; start from standby | mode, start | Confirms the Start flow |
-  | 3 | Kill the app mid-run; turn Bluetooth off mid-run | start, speed | Disconnect behaviour |
-  | 4 | Commands closer together than 700 ms | speed | Spacing rule |
-  | 5 | Units: set 1.0 mph (16 units), read the console | speed | Confirms the wire is km/h with the display in miles |
-
-  Test 5 is done (manual test, 2026-10-22).
-
-  The handrail test from the previous revision is dropped: KS Fit shows the
-  handrail isn't in the status frame (§6).
 
 ## 8. Open questions
 
-1. **Waking the pad:** when it isn't discoverable, is the Standby (⏻)
-   indicator lit? Does one press of the remote's mode button make it
-   discoverable? If so, the connect-screen hint can say "press the mode button
-   on the remote".
-
-2. **Supervised tests 1–5 (§7):** may I run them once the app is built? I'll
-   ask again with the exact commands at the time.
+None.
 
 Settled:
 
@@ -554,5 +536,7 @@ Settled:
   caps speed at 6.0 km/h (3.7 mph), the manual's walking maximum.
 - The wire is metric whatever the display unit (KS Fit), confirmed on the
   pad.
+- Waking the pad: touch M. While the pad isn't discoverable, its Standby
+  light flashes now and then. There's no remote.
 - v1 works on the real pad from Android (manual test, 2026-10-22): connect,
   Start, speed changes and Stop (standby).
