@@ -452,8 +452,9 @@ The app moves a belt someone is standing on, so these are requirements, not
 polish.
 
 - **Stop is always reachable.**
-  - One large Start/Stop button sits in the same place on every screen and in
-    every connection state, including connecting, stale and reconnecting.
+  - One large Start/Stop button follows the Standby/Manual/Auto buttons in
+    the main content. It stays available in every connection state, including
+    connecting, stale and reconnecting.
   - It's a red *Stop* unless the belt is known to be stopped and nothing is
     starting or stopping. Only then does it turn into a green *Start*.
   - Taps on Start in the first second after the switch are ignored, so a
