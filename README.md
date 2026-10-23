@@ -12,7 +12,6 @@ Created in [T3 Code](https://t3.codes).
 |---|---|
 | Model | KingSmith WalkingPad R1 Pro |
 | BLE name | `R1 Pro` |
-| macOS CoreBluetooth ID | `F076ECBD-4FC5-B48F-A341-D7101DBCFBB8` (specific to this Mac) |
 | Firmware | `M26_V187.1.2` |
 | BLE module | `WLT8266M` |
 
