@@ -14,16 +14,15 @@ the workflow run page (retained for 14 days):
 
 - `kingsmith-android-universal`: one release APK containing ARM64, ARMv7,
   x86, and x86_64 native libraries (Android 12 or newer), built on
-  the self-hosted Linux/X64 runner with the `docker` label. That runner already
-  runs in a container; the workflow installs tools directly without nested Docker.
+  a GitHub-hosted Ubuntu runner.
 - `kingsmith-macos-arm64`: zipped Apple Silicon `.app`, built on a GitHub-hosted
   Mac. Unzip before opening; it is not Developer ID signed or notarized.
 
-The APK uses the runner's debug signing key (created if missing and reused
-while the runner's home persists). It can be sideloaded, but cannot update an
-installation signed by a different key, such as a local build. Uninstalling
-first removes app settings. These builds do not publish GitHub Releases or
-install onto devices.
+The APK uses the hosted runner's debug signing key, which is disposable and
+changes between runs. It can be sideloaded, but cannot update an installation
+signed by a different key, including local builds and earlier CI runs.
+Uninstalling first removes app settings. These builds do not publish GitHub
+Releases or install onto devices.
 
 ## Device
 

@@ -17,7 +17,7 @@ concurrency:
 jobs:
   android:
     name: Android APK (universal)
-    runs-on: [self-hosted, Linux, X64, docker]
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CI: 'true'
@@ -25,13 +25,8 @@ jobs:
       - name: Install build prerequisites
         shell: bash
         run: |
-          if [ "$(id -u)" -eq 0 ]; then
-            apt-get update
-            apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config unzip zip
-          else
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config unzip zip
-          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev pkg-config unzip zip
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
