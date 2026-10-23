@@ -12,7 +12,8 @@ The **Build apps** GitHub Actions workflow runs on pushes to `main` and `v1`,
 pull requests into `main`, and manual dispatch. Download its artifacts from
 the workflow run page (retained for 14 days):
 
-- `kingsmith-android-arm64`: release APK for ARM64 Android devices, built on
+- `kingsmith-android-universal`: one release APK containing ARM64, ARMv7,
+  x86, and x86_64 native libraries (Android 12 or newer), built on
   the self-hosted Linux/X64 runner with the `docker` label. That runner already
   runs in a container; the workflow installs tools directly without nested Docker.
 - `kingsmith-macos-arm64`: zipped Apple Silicon `.app`, built on a GitHub-hosted
