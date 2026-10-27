@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { setHealthUnits } from "./health";
 
 // --- snapshot types (mirror walkingpad::session, camelCase) ---------------
 
@@ -255,6 +256,7 @@ function renderDash(s: Snapshot): void {
 
 function render(s: Snapshot): void {
   snap = s;
+  setHealthUnits(s.units.display);
   const [dot, text] = linkText(s);
   $("dot").className = `dot ${dot}`;
   $("link-text").textContent = text;

@@ -6,6 +6,43 @@ A controller for a KingSmith WalkingPad R1 Pro over Bluetooth LE.
 
 Created in [T3 Code](https://t3.codes).
 
+## Heart rate and walk history
+
+The Android app can connect to the Pixel Watch 3's built-in Bluetooth
+heart-rate sharing. No custom watch app is required. Standard Bluetooth
+heart-rate monitors are supported too.
+
+1. On the watch, open **Connected Fitness → Connect**, or **Settings →
+   Connectivity → Share Heart Rate**. Enable **Extended pairing** if needed.
+2. In the controller, tap **Search monitors**, then **Connect** beside the
+   watch. Confirm heart-rate sharing on the watch if prompted.
+3. Connect and start the WalkingPad as usual. Live BPM appears beside the
+   pad stats. Nearby devices permission is shared with pad discovery; this
+   feature does not request access to health records or watch sensors.
+
+Walks record automatically from the first fresh status confirming movement
+until the belt is confirmed stopped (a pause ends the current walk). Each
+walk saves its observed time, distance, steps, and timestamped heart-rate
+readings. The latest ten walks appear below the controls with average and
+maximum BPM. Joining a moving pad records from that point onward.
+Average and maximum BPM use recorded readings; gaps remain missing.
+
+Keep the app open in the foreground while walking, as with pad control.
+Readings disappear after ten seconds without data, or when the monitor
+reports missing skin contact. If the watch disconnects, enable sharing and
+search again; missing readings cannot be backfilled over Bluetooth. This
+does not interrupt the WalkingPad connection or its controls.
+
+History stays in the app's data directory under `walks/`, one JSON file per
+walk, with an active checkpoint every five seconds. No health data is uploaded
+by this app. Loss of fresh pad status or app shutdown ends a partial walk;
+on relaunch, the last checkpoint is recovered as partial. The last few seconds
+may be missing after an abrupt shutdown. Uninstalling the app removes history.
+The desktop app uses the same BLE support.
+
+Local UI runs should use `npm run tauri -- dev --features mock`: this simulates
+both the pad and a heart-rate monitor, with history isolated under `walks-mock/`.
+
 ## CI builds
 
 The **Build apps** GitHub Actions workflow runs on pushes to `main` and `v1`,

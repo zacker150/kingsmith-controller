@@ -23,6 +23,25 @@ pub const MAC: [u8; 6] = [0x57, 0x4c, 0x4d, 0x0f, 0x62, 0x75];
 pub const OTA_SERVICE: Uuid = uuid!("00010203-0405-0607-0809-0a0b0c0d1912");
 pub const OTA_WRITE: Uuid = uuid!("00010203-0405-0607-0809-0a0b0c0d2b12");
 
+/// A standard heart-rate monitor for exercising the complete UI without radios.
+pub fn install_heart_rate() {
+    use crate::heart_rate::{MEASUREMENT, SERVICE};
+    let monitor = MockWorld::global().add_device(
+        DeviceSpec::new([0x57, 0x41, 0x54, 0x43, 0x48, 0x03])
+            .name("Pixel Watch 3 (simulated)")
+            .service(ServiceSpec::new(SERVICE).characteristic(MEASUREMENT, CharPropFlags::NOTIFY)),
+    );
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut bpm = 90;
+        loop {
+            tick.tick().await;
+            monitor.notify(SERVICE, MEASUREMENT, vec![6, bpm]);
+            bpm = if bpm >= 110 { 90 } else { bpm + 1 };
+        }
+    });
+}
+
 /// Adds the simulated pad to blec's global mock world and starts driving it.
 pub fn install() -> DeviceHandle {
     let device = MockWorld::global().add_device(

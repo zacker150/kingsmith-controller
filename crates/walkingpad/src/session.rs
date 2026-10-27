@@ -316,6 +316,8 @@ pub struct Stats {
     pub time_s: u32,
     /// Rounded to 0.01.
     pub distance: f64,
+    /// Unrounded pad counter, independent of the selected display unit.
+    pub distance_m: u32,
     pub steps: u32,
     /// Estimated seconds left in the start countdown.
     pub countdown_s: Option<u32>,
@@ -1686,6 +1688,7 @@ impl<T: Transport> Session<T> {
             target_speed: l.target_speed.map(|(u, _)| self.display_speed(u)),
             time_s: s.time_s,
             distance: (distance_to_display(s.distance_10m, display) * 100.0).round() / 100.0,
+            distance_m: s.distance_10m * 10,
             steps: s.steps,
             countdown_s: l.countdown_since.map(|since| {
                 let left = t

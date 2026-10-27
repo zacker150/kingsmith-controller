@@ -56,6 +56,7 @@
               <div><span id="time">0:00</span><label>time</label></div>
               <div><span id="distance">0.00</span><label id="distance-unit">mi</label></div>
               <div><span id="steps">0</span><label>steps</label></div>
+              <div><span id="heart-live">–</span><label>heart rate · BPM</label></div>
             </div>
           </div>
 
@@ -92,6 +93,30 @@
             <small id="toggle-keys" class="keys">Esc / Space</small>
           </button>
         </div>
+
+        <section class="heart-panel" aria-labelledby="heart-title">
+          <div class="heart-heading">
+            <h2 id="heart-title">Heart rate</h2>
+            <span class="heart-reading"><span id="heart-bpm">–</span> <small>BPM</small></span>
+          </div>
+          <p id="heart-status" class="sub" role="status">Enable Share Heart Rate on your Pixel Watch, then search.</p>
+          <details class="heart-help">
+            <summary>Connect your Pixel Watch</summary>
+            <p class="sub">On your watch, open Connected Fitness → Connect, or Settings → Connectivity → Share Heart Rate. Enable Extended pairing if needed. Select the watch below and confirm sharing on the watch if prompted. No watch app is needed.</p>
+          </details>
+          <ul id="heart-devices" class="devices"></ul>
+          <div class="row">
+            <button id="heart-search" type="button">Search monitors</button>
+            <button id="heart-disconnect" type="button" hidden>Disconnect monitor</button>
+          </div>
+        </section>
+
+        <section class="walk-panel" aria-labelledby="walk-title">
+          <h2 id="walk-title">Walks</h2>
+          <p id="walk-current" class="sub">Walks save automatically when the belt stops. Keep the app open while walking.</p>
+          <p id="walk-error" class="problem" role="alert" hidden></p>
+          <ol id="walk-history" class="walk-history"></ol>
+        </section>
       </main>
     </div>
     <script type="module" src="./main.ts"></script>
