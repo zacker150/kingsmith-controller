@@ -109,13 +109,18 @@
         </section>
 
         <section class="walk-panel" aria-labelledby="walk-title">
-          <h2 id="walk-title">Walks</h2>
+          <h2 id="walk-title" tabindex="-1">Walks</h2>
           <p id="walk-current" class="sub">Walks save automatically when the belt stops. Recording continues with the screen off.</p>
           <p id="walk-error" class="problem" role="alert" hidden></p>
           <ol id="walk-history" class="walk-history"></ol>
+          <p id="walk-action-status" class="sub" role="status" aria-live="polite"></p>
         </section>
       </main>
     </div>
     <script type="module" src="./main.ts"></script>
+    <div id="walk-menu" class="walk-menu" role="menu" aria-label="Walk actions" hidden>
+      <button type="button" role="menuitem" data-action="download">Download TCX</button>
+      <button type="button" role="menuitem" data-action="delete" class="danger">Delete walk</button>
+    </div>
   </body>
 </html>

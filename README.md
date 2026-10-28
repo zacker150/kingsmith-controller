@@ -27,6 +27,13 @@ readings. The latest ten walks appear below the controls with average and
 maximum BPM. Joining a moving pad records from that point onward.
 Average and maximum BPM use recorded readings; gaps remain missing.
 
+Hold a saved walk, right-click it, or use its **⋮** button to open a menu
+with **Download TCX** and **Delete walk**. The menu also opens with Shift+F10
+on the focused action button. Downloads go to **Downloads/Kingsmith Controller**
+and include recorded totals and timestamped heart rate. TCX uses the Other
+activity type for walking; GPS and calories are not recorded. Delete removes
+the saved walk from local history; previously downloaded files remain available.
+
 Android keeps active Bluetooth links and walk recording running with the
 screen off using a connected-device foreground service and a partial CPU
 wake lock. It releases these when both connections end. You can allow

@@ -9,12 +9,59 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use walkingpad::session::{BeltView, LinkPhase, Snapshot as PadSnapshot, Stats};
 
 use crate::heart_rate::{Sample, unix_ms};
 
 const RECENT_LIMIT: usize = 10;
+
+pub struct Handle {
+    pub state: watch::Receiver<Snapshot>,
+    pub dir: PathBuf,
+    commands: mpsc::UnboundedSender<Delete>,
+}
+
+struct Delete {
+    id: String,
+    reply: oneshot::Sender<Result<(), String>>,
+}
+
+impl Handle {
+    pub async fn delete(&self, id: String) -> Result<(), String> {
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(Delete { id, reply })
+            .map_err(|_| "Walk history is unavailable")?;
+        result.await.map_err(|_| "Walk history is unavailable")?
+    }
+}
+
+/// Only recorder-generated IDs can address a completed walk file.
+pub fn saved_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    let valid = id.split_once('-').is_some_and(|(start, sequence)| {
+        [start, sequence].iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|c| c.is_ascii_digit())
+                && part.parse::<u64>().is_ok()
+        })
+    });
+    if !valid {
+        return Err("Invalid saved walk ID".into());
+    }
+    Ok(dir.join(format!("walk-{id}.json")))
+}
+
+pub fn read_saved(dir: &Path, id: &str) -> Result<Walk, String> {
+    let bytes = std::fs::read(saved_path(dir, id)?)
+        .map_err(|e| format!("Couldn't read saved walk: {e}"))?;
+    let walk: Walk =
+        serde_json::from_slice(&bytes).map_err(|e| format!("Couldn't read saved walk: {e}"))?;
+    if walk.id != id || walk.ended_ms.is_none() {
+        return Err("This walk has not finished saving".into());
+    }
+    Ok(walk)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -221,9 +268,11 @@ fn load_recent(
 pub fn spawn(
     dir: PathBuf,
     mut pad: watch::Receiver<PadSnapshot>,
-) -> (watch::Receiver<Snapshot>, mpsc::UnboundedSender<Sample>) {
+) -> (Handle, mpsc::UnboundedSender<Sample>) {
     let (tx, mut samples) = mpsc::unbounded_channel();
+    let (commands, mut requests) = mpsc::unbounded_channel::<Delete>();
     let (state_tx, state) = watch::channel(Snapshot::default());
+    let history_dir = dir.clone();
     tauri::async_runtime::spawn(async move {
         let mut s = Snapshot::default();
         let mut history_loaded = false;
@@ -232,6 +281,26 @@ pub fn spawn(
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             let checkpoint = tokio::select! {
+                Some(request) = requests.recv() => {
+                    let result = (|| -> Result<(), String> {
+                        let path = saved_path(&dir, &request.id)?;
+                        if !history_loaded || recorder.current.as_ref().is_some_and(|w| w.id == request.id)
+                            || recorder.pending.iter().any(|w| w.id == request.id) {
+                            return Err("Walk history is still saving; try again shortly".into());
+                        }
+                        std::fs::remove_file(path).map_err(|e| format!("Couldn't delete walk: {e}"))?;
+                        s.recent.retain(|w| w.id != request.id);
+                        // Refill the list from disk after deleting one of the ten visible walks.
+                        match load_recent(&dir, |p| std::fs::read(p)) {
+                            Ok(recent) => s.recent = recent,
+                            Err(e) => s.error = Some(format!("Walk deleted, but couldn't refresh history: {e}")),
+                        }
+                        Ok(())
+                    })();
+                    state_tx.send_replace(s.clone());
+                    let _ = request.reply.send(result);
+                    continue;
+                }
                 changed = pad.changed() => {
                     if changed.is_err() { break; }
                     recorder.observe(&pad.borrow_and_update(), unix_ms());
@@ -293,7 +362,14 @@ pub fn spawn(
             });
         }
     });
-    (state, tx)
+    (
+        Handle {
+            state,
+            dir: history_dir,
+            commands,
+        },
+        tx,
+    )
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -346,6 +422,84 @@ mod tests {
         }
     }
 
+    #[test]
+    fn saved_walk_paths_reject_traversal_and_unfinished_or_mismatched_files() {
+        let dir =
+            std::env::temp_dir().join(format!("kc-walk-read-{}-{}", std::process::id(), unix_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for id in [
+            "",
+            "../active",
+            "active",
+            "1/2-3",
+            "1-2/3",
+            "1-2-3",
+            "1-",
+            "-1",
+            "18446744073709551616-1",
+        ] {
+            assert!(saved_path(&dir, id).is_err(), "{id}");
+        }
+        let path = saved_path(&dir, "1000-1").unwrap();
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        save(&path, &stored_walk("1000-2", 1000)).unwrap();
+        assert!(read_saved(&dir, "1000-1").is_err());
+        let mut unfinished = stored_walk("1000-1", 1000);
+        unfinished.ended_ms = None;
+        save(&path, &unfinished).unwrap();
+        assert!(read_saved(&dir, "1000-1").is_err());
+        save(&path, &stored_walk("1000-1", 1000)).unwrap();
+        assert_eq!(read_saved(&dir, "1000-1").unwrap().steps, 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn delete_refills_history_persists_and_protects_the_recording() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!(
+                "kc-walk-delete-{}-{}",
+                std::process::id(),
+                unix_ms()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            for start in 1000..1011 {
+                let id = format!("{start}-1");
+                save(&saved_path(&dir, &id).unwrap(), &stored_walk(&id, start)).unwrap();
+            }
+            let (pad_tx, pad_rx) = watch::channel(pad());
+            let (history, _samples) = spawn(dir.clone(), pad_rx);
+            let mut state = history.state.clone();
+            wait_history(&mut state, |s| s.recent.len() == 10).await;
+            history.delete("1010-1".into()).await.unwrap();
+            let after = state.borrow().clone();
+            assert_eq!(after.recent.len(), 10);
+            assert_eq!(after.recent.last().unwrap().id, "1000-1");
+            assert!(!saved_path(&dir, "1010-1").unwrap().exists());
+            assert!(!load(&dir).unwrap().iter().any(|w| w.id == "1010-1"));
+            assert!(history.delete("../active".into()).await.is_err());
+            assert!(history.delete("999-1".into()).await.is_err());
+
+            let mut moving = pad();
+            pad_tx.send_replace(moving.clone());
+            let recording = wait_history(&mut state, |s| s.current.is_some()).await;
+            let id = recording.current.unwrap().id;
+            let active = std::fs::read(dir.join("active.json")).unwrap();
+            assert!(history.delete(id.clone()).await.is_err());
+            assert_eq!(std::fs::read(dir.join("active.json")).unwrap(), active);
+            moving.stats.as_mut().unwrap().belt = BeltView::Stopped;
+            moving.stats.as_mut().unwrap().speed = 0.0;
+            pad_tx.send_replace(moving);
+            wait_history(&mut state, |s| {
+                s.current.is_none() && s.recent.iter().any(|w| w.id == id)
+            })
+            .await;
+            history.delete(id.clone()).await.unwrap();
+            assert!(!saved_path(&dir, &id).unwrap().exists());
+            drop(pad_tx);
+            std::fs::remove_dir_all(dir).unwrap();
+        });
+    }
+
     async fn wait_history(
         state: &mut watch::Receiver<Snapshot>,
         predicate: impl Fn(&Snapshot) -> bool,
@@ -380,7 +534,8 @@ mod tests {
             let blocker = dir.join("walk-1000-1.json.tmp");
             std::fs::create_dir(&blocker).unwrap();
             let (pad_tx, pad_rx) = watch::channel(pad());
-            let (mut state, samples) = spawn(dir.clone(), pad_rx);
+            let (history, samples) = spawn(dir.clone(), pad_rx);
+            let mut state = history.state.clone();
             wait_history(&mut state, |s| s.error.is_some()).await;
             assert_eq!(std::fs::read(&active).unwrap(), original);
 

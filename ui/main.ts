@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { setHealthUnits } from "./health";
+import { closeWalkMenu } from "./walk-menu";
 
 // --- snapshot types (mirror walkingpad::session, camelCase) ---------------
 
@@ -359,12 +360,14 @@ window.addEventListener(
   "keydown",
   (e) => {
     if (isStopKey(e)) {
+      closeWalkMenu();
       e.preventDefault();
       e.stopPropagation();
       if (!e.repeat) stop();
       return;
     }
     const inInput = e.target instanceof HTMLInputElement;
+    if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
     if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !inInput) {
       e.preventDefault();
       if (snap?.controls.speed) {

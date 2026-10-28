@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { bindWalkMenu, onWalkAction, walkMenuRemoved } from "./walk-menu";
 
 interface Monitor { id: string; name: string | null; rssi: number | null }
 interface HeartState {
@@ -26,6 +27,7 @@ interface WalkState { current: Walk | null; recent: Walk[]; error: string | null
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 let walks: WalkState = { current: null, recent: [], error: null };
 let miles = true;
+const rows = new Map<string, { element: HTMLLIElement; date: HTMLElement; stats: HTMLElement; heart: HTMLElement; note: HTMLElement }>();
 
 function send(intent: object): void {
   invoke("heart_rate_intent", { intent }).catch((error) => {
@@ -79,28 +81,68 @@ function renderWalks(): void {
     : "Walks save automatically when the belt stops. Recording continues with the screen off.";
   $("walk-error").hidden = walks.error == null;
   $("walk-error").textContent = walks.error ?? "";
-  $("walk-history").replaceChildren(...walks.recent.map((walk) => {
-    const li = document.createElement("li");
-    const date = document.createElement("div");
-    date.textContent = new Date(walk.startedMs).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    const stats = document.createElement("p");
-    stats.textContent = metrics(walk);
-    const heart = document.createElement("p");
-    heart.textContent = heartSummary(walk);
-    li.append(date, stats, heart);
-    if (walk.interrupted) {
+  const ids = new Set(walks.recent.map((walk) => walk.id));
+  for (const [id, row] of rows) if (!ids.has(id)) {
+    walkMenuRemoved(row.element);
+    const focused = row.element.contains(document.activeElement);
+    row.element.remove();
+    rows.delete(id);
+    if (focused) $("walk-title").focus();
+  }
+  walks.recent.forEach((walk, index) => {
+    let row = rows.get(walk.id);
+    if (!row) {
+      const li = document.createElement("li");
+      li.dataset.walkId = walk.id;
+      const heading = document.createElement("div");
+      heading.className = "walk-heading";
+      const date = document.createElement("div");
+      const actions = document.createElement("button");
+      actions.type = "button";
+      actions.className = "walk-actions";
+      actions.textContent = "⋮";
+      actions.setAttribute("aria-haspopup", "menu");
+      actions.setAttribute("aria-expanded", "false");
+      actions.setAttribute("aria-controls", "walk-menu");
+      actions.setAttribute("aria-label", `Actions for walk on ${new Date(walk.startedMs).toLocaleString()}`);
+      heading.append(date, actions);
+      const stats = document.createElement("p");
+      const heart = document.createElement("p");
       const note = document.createElement("small");
       note.textContent = "Partial walk · pad status was lost or the app closed.";
-      li.append(note);
+      li.append(heading, stats, heart, note);
+      bindWalkMenu(li);
+      row = { element: li, date, stats, heart, note };
+      rows.set(walk.id, row);
     }
-    return li;
-  }));
+    row.date.textContent = new Date(walk.startedMs).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    row.stats.textContent = metrics(walk);
+    row.heart.textContent = heartSummary(walk);
+    row.note.hidden = !walk.interrupted;
+    const at = $("walk-history").children[index];
+    if (at !== row.element) $("walk-history").insertBefore(row.element, at ?? null);
+  });
 }
 
 export function setHealthUnits(display: "miles" | "km"): void {
+  if (miles === (display === "miles")) return;
   miles = display === "miles";
   renderWalks();
 }
+
+onWalkAction(async (id, type) => {
+  const status = $("walk-action-status");
+  status.textContent = type === "download" ? "Saving TCX…" : "Deleting walk…";
+  try {
+    if (type === "download") {
+      const location = await invoke<string>("export_walk_tcx", { id });
+      status.textContent = `TCX saved to ${location}`;
+    } else {
+      await invoke("delete_walk", { id });
+      status.textContent = "Walk deleted.";
+    }
+  } catch (error) { status.textContent = String(error); }
+});
 
 $("heart-search").addEventListener("click", () => send({ type: "search" }));
 $("heart-disconnect").addEventListener("click", () => send({ type: "disconnect" }));

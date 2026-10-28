@@ -75,7 +75,8 @@ fn blec_transport_drives_the_mock_pad_and_writes_only_to_fe02() {
         let history_dir =
             std::env::temp_dir().join(format!("kc-integration-walks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&history_dir);
-        let (mut walks, samples) = crate::walks::spawn(history_dir.clone(), h.watch());
+        let (history, samples) = crate::walks::spawn(history_dir.clone(), h.watch());
+        let mut walks = history.state.clone();
         let heart = heart_rate::spawn(discovery.clone(), samples);
         let mut heart_state = heart.state.clone();
         tauri::async_runtime::spawn(s.run());

@@ -13,10 +13,12 @@ mod applog;
 mod background;
 mod ble;
 mod discovery;
+mod downloads;
 mod heart_rate;
 #[cfg(feature = "mock")]
 mod mock_pad;
 mod settings;
+mod tcx;
 mod walks;
 
 use std::sync::Arc;
@@ -29,7 +31,7 @@ use settings::Settings;
 struct AppState {
     session: SessionHandle,
     heart: heart_rate::Handle,
-    walks: tokio::sync::watch::Receiver<walks::Snapshot>,
+    walks: walks::Handle,
 }
 
 #[tauri::command]
@@ -44,7 +46,28 @@ fn heart_rate_snapshot(state: State<'_, AppState>) -> heart_rate::Snapshot {
 
 #[tauri::command]
 fn walks_snapshot(state: State<'_, AppState>) -> walks::Snapshot {
-    state.walks.borrow().clone()
+    state.walks.state.borrow().clone()
+}
+
+#[tauri::command]
+async fn delete_walk(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.walks.delete(id).await
+}
+
+#[tauri::command]
+async fn export_walk_tcx(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let dir = state.walks.dir.clone();
+    let saved_id = id.clone();
+    let content = tauri::async_runtime::spawn_blocking(move || {
+        tcx::export(&walks::read_saved(&dir, &saved_id)?)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    downloads::save(&app, &id, content).await
 }
 
 #[tauri::command]
@@ -84,6 +107,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(background::Status::default())
         .plugin(background::init())
+        .plugin(downloads::init())
         // Registers blec's Android side and disconnects on exit. With the
         // `mock` feature, blec runs on its in-process mock backend.
         .plugin(tauri_plugin_blec::init())
@@ -117,7 +141,7 @@ pub fn run() {
             #[cfg(target_os = "android")]
             background::spawn(app.handle().clone(), handle.watch(), heart.state.clone());
             let mut heart_watch = heart.state.clone();
-            let mut walks_watch = walks.clone();
+            let mut walks_watch = walks.state.clone();
             let heart_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -184,6 +208,8 @@ pub fn run() {
             heart_rate_intent,
             heart_rate_snapshot,
             walks_snapshot,
+            delete_walk,
+            export_walk_tcx,
             background_status,
             open_bluetooth_settings
         ])
