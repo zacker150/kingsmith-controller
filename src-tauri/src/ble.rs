@@ -1,7 +1,7 @@
 //! [`Transport`] over `tauri-plugin-blec` 0.18 (`blec`): btleplug on desktop,
 //! the plugin's Kotlin backend on Android.
 //!
-//! Knows GATT only: scanning with the `fe00` filter, the `fe01`/`fe02` check,
+//! Knows GATT only: pad discovery via the shared scanner, the `fe01`/`fe02` check,
 //! notifications and write-without-response. The protocol lives in
 //! `walkingpad`.
 //!
@@ -11,12 +11,11 @@
 //! method targets the hard-coded `fe02`, and this file contains exactly one
 //! GATT write call (checked by a test).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri_plugin_blec::models::{AdapterState, BleDevice, CharProps, ScanFilter, WriteType};
+use tauri_plugin_blec::models::{BleDevice, CharProps, WriteType};
 use tauri_plugin_blec::{Connection, Handler, OnDisconnectHandler, Timeouts};
-use tokio::sync::mpsc;
 use uuid::{Uuid, uuid};
 use walkingpad::protocol::{mac_from_manufacturer_data, normalize_mac};
 use walkingpad::transport::{
@@ -29,18 +28,6 @@ pub const SERVICE: Uuid = uuid!("0000fe00-0000-1000-8000-00805f9b34fb");
 pub const NOTIFY: Uuid = uuid!("0000fe01-0000-1000-8000-00805f9b34fb");
 /// The only characteristic this app ever writes to.
 pub const WRITE: Uuid = uuid!("0000fe02-0000-1000-8000-00805f9b34fb");
-
-/// One `discover` call scans this long; the forwarder restarts it, so the
-/// scan as a whole is continuous until `stop_scan`.
-const SCAN_WINDOW_MS: u64 = 60_000;
-
-/// Scan bookkeeping, behind an async mutex so restarting `discover` and
-/// stopping never interleave.
-#[derive(Default)]
-struct ScanState {
-    active: bool,
-    generation: u64,
-}
 
 /// A connection to the pad. The `Connection` is private, so nothing outside
 /// these methods can write to it, and the one write targets `fe02`.
@@ -69,17 +56,17 @@ impl PadLink {
 
 pub struct BlecTransport {
     events: EventSender,
-    scan: Arc<tokio::sync::Mutex<ScanState>>,
+    discovery: crate::discovery::Discovery,
     link: Mutex<Option<(LinkId, PadLink)>>,
     next_link: Mutex<LinkId>,
 }
 
 impl BlecTransport {
     #[must_use]
-    pub fn new(events: EventSender) -> Self {
+    pub fn new(events: EventSender, discovery: crate::discovery::Discovery) -> Self {
         Self {
             events,
-            scan: Arc::new(tokio::sync::Mutex::new(ScanState::default())),
+            discovery,
             link: Mutex::new(None),
             next_link: Mutex::new(1),
         }
@@ -99,7 +86,7 @@ impl BlecTransport {
 
 /// The handler. On Android the plugin initializes it only after the app is
 /// ready, so wait for it.
-async fn handler() -> Result<&'static Handler, TransportError> {
+pub(crate) async fn handler() -> Result<&'static Handler, TransportError> {
     let started = tokio::time::Instant::now();
     loop {
         match tauri_plugin_blec::get_handler() {
@@ -129,7 +116,7 @@ async fn handler() -> Result<&'static Handler, TransportError> {
     }
 }
 
-fn map_err(e: tauri_plugin_blec::Error) -> TransportError {
+pub(crate) fn map_err(e: tauri_plugin_blec::Error) -> TransportError {
     use tauri_plugin_blec::Error as E;
     match e {
         E::Timeout(_) => TransportError::Timeout,
@@ -150,7 +137,7 @@ fn map_err(e: tauri_plugin_blec::Error) -> TransportError {
     }
 }
 
-fn to_ad(d: &BleDevice) -> Advertisement {
+pub(crate) fn to_ad(d: &BleDevice) -> Advertisement {
     // Android hands out the MAC as the address; elsewhere (macOS) the
     // manufacturer data is the only place it shows (design §5.2).
     let from_address = if cfg!(target_os = "android") {
@@ -171,90 +158,16 @@ fn to_ad(d: &BleDevice) -> Advertisement {
     }
 }
 
-fn forward(events: &EventSender, devices: &[BleDevice]) -> bool {
-    let ads = devices.iter().map(to_ad).collect();
-    events.send(TransportEvent::ScanResults(ads)).is_ok()
-}
-
 impl Transport for BlecTransport {
     async fn start_scan(&self) -> Result<(), TransportError> {
-        let h = handler().await?;
-        // Android 12+: BLUETOOTH_SCAN and BLUETOOTH_CONNECT at runtime. Always
-        // true elsewhere. If the user denied before, blec sends them to the
-        // app's settings, so the session only asks again on a user action.
-        if !tauri_plugin_blec::check_permissions(true)
-            .await
-            .map_err(map_err)?
-        {
-            return Err(TransportError::PermissionDenied);
-        }
-        if let AdapterState::Off = h.get_adapter_state().await {
-            return Err(TransportError::AdapterOff);
-        }
-        let mut scan = self.scan.lock().await;
-        if scan.active {
-            let _ = h.stop_scan().await;
-        }
-        let (tx, mut rx) = mpsc::channel::<Vec<BleDevice>>(16);
-        h.discover(
-            Some(tx),
-            SCAN_WINDOW_MS,
-            ScanFilter::Service(SERVICE),
-            false,
-        )
-        .await
-        .map_err(map_err)?;
-        scan.active = true;
-        scan.generation += 1;
-        let generation = scan.generation;
-        drop(scan);
-
-        let state = Arc::clone(&self.scan);
-        let events = self.events.clone();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                // Drain until blec's scan task ends (window over or stop_scan).
-                // The receiver is never dropped while that task can still send:
-                // blec panics if it can't deliver.
-                let mut session_gone = false;
-                while let Some(devices) = rx.recv().await {
-                    if !session_gone && !forward(&events, &devices) {
-                        session_gone = true;
-                        let _ = h.stop_scan().await;
-                    }
-                }
-                let s = state.lock().await;
-                if session_gone || !s.active || s.generation != generation {
-                    return;
-                }
-                let (tx, next) = mpsc::channel(16);
-                if let Err(e) = h
-                    .discover(
-                        Some(tx),
-                        SCAN_WINDOW_MS,
-                        ScanFilter::Service(SERVICE),
-                        false,
-                    )
-                    .await
-                {
-                    applog::line(&format!("scan restart failed: {e}"));
-                    return;
-                }
-                rx = next;
-            }
-        });
-        Ok(())
+        self.discovery.pad(true).await
     }
 
     async fn stop_scan(&self) -> Result<(), TransportError> {
-        let h = handler().await?;
-        let mut scan = self.scan.lock().await;
-        scan.active = false;
-        h.stop_scan().await.map_err(map_err)
+        self.discovery.pad(false).await
     }
 
     async fn connect(&self, id: &str) -> Result<LinkId, TransportError> {
-        let h = handler().await?;
         let link = {
             let mut n = self
                 .next_link
@@ -267,7 +180,7 @@ impl Transport for BlecTransport {
         let on_disconnect = OnDisconnectHandler::from_sync(move || {
             let _ = events.send(TransportEvent::Disconnected { link });
         });
-        let conn = h.connect(id, on_disconnect, false).await.map_err(map_err)?;
+        let conn = self.discovery.connect(id, on_disconnect).await?;
         if let Err(why) = check_gatt(&conn).await {
             applog::line(&format!("{id}: {why}"));
             let _ = conn.disconnect().await;

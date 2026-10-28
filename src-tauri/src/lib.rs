@@ -1,8 +1,8 @@
 //! The app shell: wires the `walkingpad` session to `tauri-plugin-blec` and
 //! the UI.
 //!
-//! - The UI sends intents through one command (`intent`) and renders the
-//!   `pad-state` event, a full snapshot after every change. It never talks to
+//! - Pad intents and `pad-state` snapshots remain separate from heart-rate
+//!   intents/snapshots and local walk history. The UI never talks directly to
 //!   Bluetooth: the capability grants no blec permissions.
 //! - Settings (remembered pad, units, presets, Stop method) live in
 //!   `settings.json` in the app config dir and are saved when they change.
@@ -10,10 +10,16 @@
 //!   is sent to the pad, so a moving belt keeps moving (design §7).
 
 mod applog;
+mod background;
 mod ble;
+mod discovery;
+mod downloads;
+mod heart_rate;
 #[cfg(feature = "mock")]
 mod mock_pad;
 mod settings;
+mod tcx;
+mod walks;
 
 use std::sync::Arc;
 
@@ -24,6 +30,49 @@ use settings::Settings;
 
 struct AppState {
     session: SessionHandle,
+    heart: heart_rate::Handle,
+    walks: walks::Handle,
+}
+
+#[tauri::command]
+fn heart_rate_intent(state: State<'_, AppState>, intent: heart_rate::Intent) -> Result<(), String> {
+    state.heart.send(intent)
+}
+
+#[tauri::command]
+fn heart_rate_snapshot(state: State<'_, AppState>) -> heart_rate::Snapshot {
+    state.heart.state.borrow().clone()
+}
+
+#[tauri::command]
+fn walks_snapshot(state: State<'_, AppState>) -> walks::Snapshot {
+    state.walks.state.borrow().clone()
+}
+
+#[tauri::command]
+async fn delete_walk(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.walks.delete(id).await
+}
+
+#[tauri::command]
+async fn export_walk_tcx(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    let dir = state.walks.dir.clone();
+    let saved_id = id.clone();
+    let content = tauri::async_runtime::spawn_blocking(move || {
+        tcx::export(&walks::read_saved(&dir, &saved_id)?)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    downloads::save(&app, &id, content).await
+}
+
+#[tauri::command]
+fn background_status(state: State<'_, background::Status>) -> Option<String> {
+    state.0.lock().unwrap().clone()
 }
 
 /// Every user action: connect, start, stop, speed, mode, presets, units,
@@ -56,6 +105,9 @@ fn open_bluetooth_settings() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(background::Status::default())
+        .plugin(background::init())
+        .plugin(downloads::init())
         // Registers blec's Android side and disconnects on exit. With the
         // `mock` feature, blec runs on its in-process mock backend.
         .plugin(tauri_plugin_blec::init())
@@ -68,14 +120,47 @@ pub fn run() {
             {
                 applog::line("MOCK BUILD: simulated pad, no Bluetooth");
                 mock_pad::install();
+                mock_pad::install_heart_rate();
             }
 
             let (events_tx, events_rx) = walkingpad::transport::event_channel();
-            let transport = ble::BlecTransport::new(events_tx);
+            let discovery = discovery::Discovery::new(events_tx.clone());
+            let transport = ble::BlecTransport::new(events_tx, discovery.clone());
             let mut config = settings.session_config();
             config.log = Some(Arc::new(|line: &str| applog::line(line)));
             let (session, handle) = session::new(transport, events_rx, config);
             tauri::async_runtime::spawn(session.run());
+
+            let history_dir = app.path().app_data_dir()?.join(if cfg!(feature = "mock") {
+                "walks-mock"
+            } else {
+                "walks"
+            });
+            let (walks, samples) = walks::spawn(history_dir, handle.watch());
+            let heart = heart_rate::spawn(discovery, samples);
+            #[cfg(target_os = "android")]
+            background::spawn(app.handle().clone(), handle.watch(), heart.state.clone());
+            let mut heart_watch = heart.state.clone();
+            let mut walks_watch = walks.state.clone();
+            let heart_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let _ =
+                        heart_app.emit("heart-rate-state", heart_watch.borrow_and_update().clone());
+                    if heart_watch.changed().await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let walks_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let _ = walks_app.emit("walks-state", walks_watch.borrow_and_update().clone());
+                    if walks_watch.changed().await.is_err() {
+                        break;
+                    }
+                }
+            });
 
             // Publish every snapshot; persist what the user changed.
             let mut watch = handle.watch();
@@ -103,7 +188,11 @@ pub fn run() {
                 }
             });
 
-            app.manage(AppState { session: handle });
+            app.manage(AppState {
+                session: handle,
+                heart,
+                walks,
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -116,6 +205,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             intent,
             snapshot,
+            heart_rate_intent,
+            heart_rate_snapshot,
+            walks_snapshot,
+            delete_walk,
+            export_walk_tcx,
+            background_status,
             open_bluetooth_settings
         ])
         .run(tauri::generate_context!())

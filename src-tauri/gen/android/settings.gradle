@@ -1,3 +1,7 @@
 include ':app'
 
 apply from: 'tauri.settings.gradle'
+
+// The pinned blec Android backend adds a conservative PHY preference for
+// heart-rate monitors. Keep the Rust/JNI API at 0.18.0 (src-tauri/Cargo.toml).
+project(':tauri-plugin-blec').projectDir = file('../../vendor/blec-android')

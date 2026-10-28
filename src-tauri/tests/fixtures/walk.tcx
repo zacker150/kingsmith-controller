@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+<Activities><Activity Sport="Other"><Id>1970-01-01T00:00:01Z</Id>
+<Lap StartTime="1970-01-01T00:00:01Z"><TotalTimeSeconds>2</TotalTimeSeconds>
+<DistanceMeters>5</DistanceMeters><Calories>0</Calories>
+<AverageHeartRateBpm><Value>106</Value></AverageHeartRateBpm><MaximumHeartRateBpm><Value>130</Value></MaximumHeartRateBpm>
+<Intensity>Active</Intensity><TriggerMethod>Manual</TriggerMethod><Track>
+<Trackpoint><Time>1970-01-01T00:00:01Z</Time><DistanceMeters>0</DistanceMeters><HeartRateBpm><Value>80</Value></HeartRateBpm></Trackpoint>
+<Trackpoint><Time>1970-01-01T00:00:02.001Z</Time><HeartRateBpm><Value>110</Value></HeartRateBpm></Trackpoint>
+<Trackpoint><Time>1970-01-01T00:00:03Z</Time><DistanceMeters>5</DistanceMeters><HeartRateBpm><Value>130</Value></HeartRateBpm></Trackpoint>
+</Track></Lap><Notes>WalkingPad walk. Steps: 8. Calories were not recorded. Partial walk: pad status was lost or the app closed.</Notes></Activity></Activities></TrainingCenterDatabase>

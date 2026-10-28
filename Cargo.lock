@@ -1864,6 +1864,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-blec",
+ "time",
  "tokio",
  "uuid",
  "walkingpad",
