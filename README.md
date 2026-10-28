@@ -48,14 +48,50 @@ cancels recovery. Missing readings cannot be backfilled over Bluetooth.
 This does not interrupt the WalkingPad connection or its controls.
 
 History stays in the app's data directory under `walks/`, one JSON file per
-walk, with an active checkpoint every five seconds. No health data is uploaded
-by this app. Loss of fresh pad status or app shutdown ends a partial walk;
+walk, with an active checkpoint every five seconds. No health data is sent
+to a server by this app. Loss of fresh pad status or app shutdown ends a partial walk;
 on relaunch, the last checkpoint is recovered as partial. The last few seconds
 may be missing after an abrupt shutdown. Uninstalling the app removes history.
 The desktop app uses the same BLE support.
 
 Local UI runs should use `npm run tauri -- dev --features mock`: this simulates
 both the pad and a heart-rate monitor, with history isolated under `walks-mock/`.
+
+## Health Connect (Android)
+
+Tap **Connect Health Connect** below walk history and allow write access to
+workouts, distance, steps, and heart rate. After that, completed walks sync
+automatically, including existing saved walks beyond the ten shown in the UI.
+Android 14+ includes Health Connect; Android 12–13 may require installing or
+updating the Health Connect app first. This integration requests no read access.
+
+Exports include a walking exercise session, observed distance and steps, and
+timestamped heart-rate samples when present. Partial walks are labeled as such.
+Empty/invalid intervals and missing metrics are omitted; GPS, calories, and
+heart-rate gaps are not invented. The original history does not store time-zone
+offsets, so exports leave those optional offsets unset.
+
+Android WorkManager schedules export after a walk is saved, after enabling
+sync, and when the app starts/resumes. Pending work survives process death and
+retries temporary errors with backoff. Revoked permissions pause writes until
+you restore access. The panel shows the number exported, last successful sync,
+and errors. OS scheduling may defer a background export.
+
+Stable Health Connect client IDs/versioning prevent duplicates after a partial
+write or crash. Private local receipts skip previously exported walks, including
+copies you later delete in Health Connect. **Turn off sync** stops future exports;
+it does not revoke system permissions or delete existing Health Connect copies.
+Deleting a local walk also leaves its Health Connect copy; manage those copies
+through **Manage access** and Health Connect's data controls. Apps you authorize
+in Health Connect can read them according to their permissions.
+
+Native record-mapping and durable-outbox tests run in the Android CI job. To run
+them locally with JDK 17+ and `ANDROID_HOME` configured:
+
+```sh
+cd src-tauri/gen/android
+./gradlew :app:testUniversalDebugUnitTest --console=plain
+```
 
 ## CI builds
 

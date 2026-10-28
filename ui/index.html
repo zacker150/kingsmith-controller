@@ -115,6 +115,16 @@
           <ol id="walk-history" class="walk-history"></ol>
           <p id="walk-action-status" class="sub" role="status" aria-live="polite"></p>
         </section>
+        <section id="health-connect-panel" class="health-connect-panel" aria-labelledby="health-connect-title" hidden>
+          <h2 id="health-connect-title">Health Connect</h2>
+          <p id="health-connect-status" class="sub" role="status" aria-live="polite"></p>
+          <div class="row">
+            <button id="health-connect-enable" type="button">Connect Health Connect</button>
+            <button id="health-connect-disable" type="button" hidden>Turn off sync</button>
+            <button id="health-connect-settings" type="button" hidden>Manage access</button>
+          </div>
+          <p class="sub">Writes to Health Connect on this phone. Copies already synced stay there when you turn sync off or delete a local walk.</p>
+        </section>
       </main>
     </div>
     <script type="module" src="./main.ts"></script>

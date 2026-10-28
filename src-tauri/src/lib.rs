@@ -14,6 +14,7 @@ mod background;
 mod ble;
 mod discovery;
 mod downloads;
+mod health_connect;
 mod heart_rate;
 #[cfg(feature = "mock")]
 mod mock_pad;
@@ -75,6 +76,19 @@ fn background_status(state: State<'_, background::Status>) -> Option<String> {
     state.0.lock().unwrap().clone()
 }
 
+#[tauri::command]
+async fn health_connect_status(app: tauri::AppHandle) -> Result<health_connect::Snapshot, String> {
+    health_connect::status(&app).await
+}
+
+#[tauri::command]
+async fn health_connect_action(
+    app: tauri::AppHandle,
+    action: health_connect::Action,
+) -> Result<(), String> {
+    health_connect::action(&app, action).await
+}
+
 /// Every user action: connect, start, stop, speed, mode, presets, units,
 /// visibility.
 #[tauri::command]
@@ -108,6 +122,7 @@ pub fn run() {
         .manage(background::Status::default())
         .plugin(background::init())
         .plugin(downloads::init())
+        .plugin(health_connect::init())
         // Registers blec's Android side and disconnects on exit. With the
         // `mock` feature, blec runs on its in-process mock backend.
         .plugin(tauri_plugin_blec::init())
@@ -136,7 +151,11 @@ pub fn run() {
             } else {
                 "walks"
             });
-            let (walks, samples) = walks::spawn(history_dir, handle.watch());
+            let (walks, samples) = walks::spawn(history_dir.clone(), handle.watch());
+            #[cfg(target_os = "android")]
+            if !cfg!(feature = "mock") {
+                health_connect::spawn(app.handle().clone(), history_dir, walks.state.clone());
+            }
             let heart = heart_rate::spawn(discovery, samples);
             #[cfg(target_os = "android")]
             background::spawn(app.handle().clone(), handle.watch(), heart.state.clone());
@@ -211,6 +230,8 @@ pub fn run() {
             delete_walk,
             export_walk_tcx,
             background_status,
+            health_connect_status,
+            health_connect_action,
             open_bluetooth_settings
         ])
         .run(tauri::generate_context!())

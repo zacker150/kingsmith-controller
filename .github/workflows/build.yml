@@ -70,6 +70,10 @@ jobs:
       - name: Build APK
         run: npm run tauri -- android build --ci --target aarch64 armv7 i686 x86_64 --apk
 
+      - name: Test Health Connect export
+        working-directory: src-tauri/gen/android
+        run: ./gradlew :app:testUniversalDebugUnitTest --console=plain
+
       - name: Verify APK includes every architecture
         shell: bash
         run: |
