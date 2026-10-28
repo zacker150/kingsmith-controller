@@ -205,12 +205,66 @@ fn blec_transport_drives_the_mock_pad_and_writes_only_to_fe02() {
         );
         monitor.drop_link();
         watch_until(&mut heart_state, |s| {
-            s.phase == "idle" && s.message.contains("lost")
+            s.phase == "reconnecting" && s.message.contains("lost")
         })
         .await;
+        heart
+            .send(HeartIntent::SetVisible { visible: false })
+            .unwrap();
+        watch_until(&mut heart_state, |s| s.phase == "connected").await;
+        assert!(
+            monitor.is_connected(),
+            "watch reconnects even while the UI is hidden"
+        );
+        assert!(
+            heart_state.borrow().bpm.is_none(),
+            "old readings are never reused after reconnect"
+        );
+        monitor.notify(heart_rate::SERVICE, heart_rate::MEASUREMENT, vec![0, 130]);
+        watch_until(&mut heart_state, |s| s.bpm == Some(130)).await;
         assert!(
             device.is_connected(),
             "watch link loss doesn't disconnect the pad"
+        );
+        monitor.drop_link();
+        watch_until(&mut heart_state, |s| s.phase == "reconnecting").await;
+        heart.send(HeartIntent::Disconnect).unwrap();
+        watch_until(&mut heart_state, |s| s.phase == "idle").await;
+        let attempts = monitor
+            .ops()
+            .iter()
+            .filter(|op| **op == Op::Connect)
+            .count();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!monitor.is_connected());
+        assert_eq!(
+            monitor
+                .ops()
+                .iter()
+                .filter(|op| **op == Op::Connect)
+                .count(),
+            attempts,
+            "manual disconnect cancels scheduled recovery"
+        );
+        // Cancel a native connection before its delayed result arrives. The
+        // late success must close its link rather than silently reconnect.
+        heart
+            .send(HeartIntent::SetVisible { visible: true })
+            .unwrap();
+        heart.send(HeartIntent::Search).unwrap();
+        let found = watch_until(&mut heart_state, |s| !s.devices.is_empty()).await;
+        heart
+            .send(HeartIntent::Connect {
+                id: found.devices[0].id.clone(),
+            })
+            .unwrap();
+        watch_until(&mut heart_state, |s| s.phase == "connecting").await;
+        heart.send(HeartIntent::Disconnect).unwrap();
+        watch_until(&mut heart_state, |s| s.phase == "disconnecting").await;
+        watch_until(&mut heart_state, |s| s.phase == "idle").await;
+        assert!(
+            !monitor.is_connected(),
+            "late connection success is cleaned up after cancellation"
         );
         h.send(Intent::Disconnect);
         wait(&h, "idle", 10, |s| s.link == LinkPhase::Idle).await;

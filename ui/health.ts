@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 interface Monitor { id: string; name: string | null; rssi: number | null }
 interface HeartState {
-  phase: "idle" | "searching" | "connecting" | "connected";
+  phase: "idle" | "searching" | "connecting" | "connected" | "reconnecting" | "disconnecting";
   monitor: Monitor | null;
   devices: Monitor[];
   bpm: number | null;
@@ -41,7 +41,7 @@ function renderHeart(s: HeartState): void {
   $<HTMLButtonElement>("heart-search").disabled = s.phase !== "idle";
   const disconnect = $<HTMLButtonElement>("heart-disconnect");
   disconnect.hidden = s.phase === "idle";
-  disconnect.disabled = s.phase === "connecting";
+  disconnect.disabled = s.phase === "disconnecting";
   disconnect.textContent = s.phase === "searching" ? "Stop searching" : "Disconnect monitor";
   $("heart-devices").replaceChildren(...(s.phase === "idle" || s.phase === "searching" ? s.devices : []).map((monitor) => {
     const li = document.createElement("li");
@@ -76,7 +76,7 @@ function heartSummary(walk: Walk): string {
 function renderWalks(): void {
   $("walk-current").textContent = walks.current
     ? `Recording · ${metrics(walks.current)}. ${heartSummary(walks.current)}.`
-    : "Walks save automatically when the belt stops. Keep the app open while walking.";
+    : "Walks save automatically when the belt stops. Recording continues with the screen off.";
   $("walk-error").hidden = walks.error == null;
   $("walk-error").textContent = walks.error ?? "";
   $("walk-history").replaceChildren(...walks.recent.map((walk) => {
@@ -109,6 +109,12 @@ document.addEventListener("visibilitychange", () => send({ type: "setVisible", v
 async function init(): Promise<void> {
   await listen<HeartState>("heart-rate-state", (event) => renderHeart(event.payload));
   await listen<WalkState>("walks-state", (event) => { walks = event.payload; renderWalks(); });
+  const renderBackgroundError = (error: string | null): void => {
+    $("background-error").hidden = !error;
+    $("background-error").textContent = error ? `${error}. Keep the app visible until background operation is available.` : "";
+  };
+  await listen<string | null>("background-error", (event) => renderBackgroundError(event.payload));
+  renderBackgroundError(await invoke<string | null>("background_status"));
   renderHeart(await invoke<HeartState>("heart_rate_snapshot"));
   walks = await invoke<WalkState>("walks_snapshot");
   renderWalks();

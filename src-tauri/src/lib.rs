@@ -10,6 +10,7 @@
 //!   is sent to the pad, so a moving belt keeps moving (design §7).
 
 mod applog;
+mod background;
 mod ble;
 mod discovery;
 mod heart_rate;
@@ -46,6 +47,11 @@ fn walks_snapshot(state: State<'_, AppState>) -> walks::Snapshot {
     state.walks.borrow().clone()
 }
 
+#[tauri::command]
+fn background_status(state: State<'_, background::Status>) -> Option<String> {
+    state.0.lock().unwrap().clone()
+}
+
 /// Every user action: connect, start, stop, speed, mode, presets, units,
 /// visibility.
 #[tauri::command]
@@ -76,6 +82,8 @@ fn open_bluetooth_settings() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(background::Status::default())
+        .plugin(background::init())
         // Registers blec's Android side and disconnects on exit. With the
         // `mock` feature, blec runs on its in-process mock backend.
         .plugin(tauri_plugin_blec::init())
@@ -106,6 +114,8 @@ pub fn run() {
             });
             let (walks, samples) = walks::spawn(history_dir, handle.watch());
             let heart = heart_rate::spawn(discovery, samples);
+            #[cfg(target_os = "android")]
+            background::spawn(app.handle().clone(), handle.watch(), heart.state.clone());
             let mut heart_watch = heart.state.clone();
             let mut walks_watch = walks.clone();
             let heart_app = app.handle().clone();
@@ -174,6 +184,7 @@ pub fn run() {
             heart_rate_intent,
             heart_rate_snapshot,
             walks_snapshot,
+            background_status,
             open_bluetooth_settings
         ])
         .run(tauri::generate_context!())

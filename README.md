@@ -27,11 +27,18 @@ readings. The latest ten walks appear below the controls with average and
 maximum BPM. Joining a moving pad records from that point onward.
 Average and maximum BPM use recorded readings; gaps remain missing.
 
-Keep the app open in the foreground while walking, as with pad control.
+Android keeps active Bluetooth links and walk recording running with the
+screen off using a connected-device foreground service and a partial CPU
+wake lock. It releases these when both connections end. You can allow
+notifications to see the ongoing connection notification and tap it to return.
+Closing the app's task ends background operation.
+
 Readings disappear after ten seconds without data, or when the monitor
-reports missing skin contact. If the watch disconnects, enable sharing and
-search again; missing readings cannot be backfilled over Bluetooth. This
-does not interrupt the WalkingPad connection or its controls.
+reports missing skin contact. A dropped watch link retries automatically,
+with increasing delays, for up to two minutes; leave Share Heart Rate enabled.
+If recovery fails, enable sharing and search again. Disconnecting the monitor
+cancels recovery. Missing readings cannot be backfilled over Bluetooth.
+This does not interrupt the WalkingPad connection or its controls.
 
 History stays in the app's data directory under `walks/`, one JSON file per
 walk, with an active checkpoint every five seconds. No health data is uploaded
