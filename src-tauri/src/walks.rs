@@ -2,6 +2,8 @@
 //! Fresh pad status starts/ends a walk; heart-rate loss never controls the belt.
 
 use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -11,6 +13,8 @@ use tokio::sync::{mpsc, watch};
 use walkingpad::session::{BeltView, LinkPhase, Snapshot as PadSnapshot, Stats};
 
 use crate::heart_rate::{Sample, unix_ms};
+
+const RECENT_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,24 +177,42 @@ fn load(dir: &Path) -> std::io::Result<Vec<Summary>> {
             }
         }
     }
-    let mut recent = Vec::new();
+    load_recent(dir, |path| std::fs::read(path))
+}
+
+/// IDs are `<start milliseconds>-<sequence>`. Rank filenames numerically before
+/// decoding samples, so historical walks don't add unbounded file I/O at launch.
+fn load_recent(
+    dir: &Path,
+    mut read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
+) -> std::io::Result<Vec<Summary>> {
+    let mut files = BinaryHeap::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path
+        if let Some(id) = path
             .file_name()
             .and_then(|s| s.to_str())
-            .is_some_and(|name| name.starts_with("walk-") && name.ends_with(".json"))
+            .and_then(|name| name.strip_prefix("walk-"))
+            .and_then(|name| name.strip_suffix(".json"))
+            && let Some((start, sequence)) = id.split_once('-')
+            && let (Ok(start), Ok(sequence)) = (start.parse::<u64>(), sequence.parse::<u64>())
         {
-            // Keep a damaged file on disk; it must not hide all other walks.
-            if let Ok(bytes) = std::fs::read(&path)
-                && let Ok(walk) = serde_json::from_slice::<Walk>(&bytes)
-            {
-                recent.push(walk.summary());
+            files.push(Reverse((start, sequence, path)));
+            if files.len() > RECENT_LIMIT {
+                files.pop();
             }
         }
     }
+    let mut recent = Vec::new();
+    for Reverse((_, _, path)) in files.into_sorted_vec() {
+        // Keep a damaged file on disk; it must not hide the other recent walks.
+        if let Ok(bytes) = read(&path)
+            && let Ok(walk) = serde_json::from_slice::<Walk>(&bytes)
+        {
+            recent.push(walk.summary());
+        }
+    }
     recent.sort_by_key(|w| std::cmp::Reverse(w.started_ms));
-    recent.truncate(10);
     Ok(recent)
 }
 
@@ -204,20 +226,19 @@ pub fn spawn(
     let (state_tx, state) = watch::channel(Snapshot::default());
     tauri::async_runtime::spawn(async move {
         let mut s = Snapshot::default();
-        match load(&dir) {
-            Ok(recent) => s.recent = recent,
-            Err(e) => s.error = Some(format!("Couldn't load walk history: {e}")),
-        }
+        let mut history_loaded = false;
         let mut recorder = Recorder::default();
         let mut checkpoint_id = None;
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             let checkpoint = tokio::select! {
-                Ok(()) = pad.changed() => {
+                changed = pad.changed() => {
+                    if changed.is_err() { break; }
                     recorder.observe(&pad.borrow_and_update(), unix_ms());
                     false
                 }
-                Some(sample) = samples.recv() => {
+                sample = samples.recv() => {
+                    let Some(sample) = sample else { break; };
                     recorder.observe(&pad.borrow(), unix_ms());
                     recorder.sample(sample);
                     false
@@ -226,13 +247,20 @@ pub fn spawn(
                 else => break,
             };
             let result = (|| -> std::io::Result<()> {
+                // Recovery owns active.json until it succeeds. In the meantime
+                // new walks keep recording in memory, and each event/tick retries
+                // recovery before any checkpoint replacement or cleanup.
+                if !history_loaded {
+                    s.recent = load(&dir)?;
+                    history_loaded = true;
+                }
                 std::fs::create_dir_all(&dir)?;
                 while let Some(walk) = recorder.pending.first() {
                     save(&dir.join(format!("walk-{}.json", walk.id)), walk)?;
                     let summary = walk.summary();
                     s.recent.retain(|w| w.id != summary.id);
                     s.recent.insert(0, summary);
-                    s.recent.truncate(10);
+                    s.recent.truncate(RECENT_LIMIT);
                     recorder.pending.remove(0);
                 }
                 let active = dir.join("active.json");
@@ -250,7 +278,8 @@ pub fn spawn(
                 Ok(())
             })();
             if let Err(e) = result {
-                s.error = Some(format!("Couldn't save walk history; retrying: {e}"));
+                let action = if history_loaded { "save" } else { "recover" };
+                s.error = Some(format!("Couldn't {action} walk history; retrying: {e}"));
             } else if checkpoint {
                 s.error = None;
             }
@@ -302,6 +331,165 @@ mod tests {
             bpm,
             monitor: "Pixel Watch 3".into(),
         }
+    }
+
+    fn stored_walk(id: &str, started_ms: u64) -> Walk {
+        Walk {
+            id: id.into(),
+            started_ms,
+            ended_ms: Some(started_ms + 1000),
+            interrupted: false,
+            time_s: 1,
+            distance_m: 10,
+            steps: 2,
+            heart_rate: vec![reading(started_ms, 95)],
+        }
+    }
+
+    async fn wait_history(
+        state: &mut watch::Receiver<Snapshot>,
+        predicate: impl Fn(&Snapshot) -> bool,
+    ) -> Snapshot {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let snapshot = state.borrow_and_update().clone();
+                if predicate(&snapshot) {
+                    return snapshot;
+                }
+                state.changed().await.expect("history task still running");
+            }
+        })
+        .await
+        .expect("history state updated")
+    }
+
+    #[test]
+    fn failed_recovery_preserves_checkpoint_while_new_walks_are_buffered() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!(
+                "kc-walk-recovery-{}-{}",
+                std::process::id(),
+                unix_ms()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let active = dir.join("active.json");
+            save(&active, &stored_walk("1000-1", 1000)).unwrap();
+            let original = std::fs::read(&active).unwrap();
+            // Deterministically fail the recovery write (as full/read-only
+            // storage would), while leaving active.json readable/deletable.
+            let blocker = dir.join("walk-1000-1.json.tmp");
+            std::fs::create_dir(&blocker).unwrap();
+            let (pad_tx, pad_rx) = watch::channel(pad());
+            let (mut state, samples) = spawn(dir.clone(), pad_rx);
+            wait_history(&mut state, |s| s.error.is_some()).await;
+            assert_eq!(std::fs::read(&active).unwrap(), original);
+
+            let mut moving = pad();
+            moving.stats.as_mut().unwrap().time_s = 101;
+            pad_tx.send_replace(moving.clone());
+            let recording = wait_history(&mut state, |s| s.current.is_some()).await;
+            let new_id = recording.current.unwrap().id;
+            samples.send(reading(unix_ms(), 120)).unwrap();
+            wait_history(&mut state, |s| {
+                s.current.as_ref().is_some_and(|w| w.samples == 1)
+            })
+            .await;
+            assert_eq!(
+                std::fs::read(&active).unwrap(),
+                original,
+                "a new walk must not overwrite unrecovered data"
+            );
+
+            let stats = moving.stats.as_mut().unwrap();
+            stats.belt = BeltView::Stopped;
+            stats.speed = 0.0;
+            stats.time_s = 105;
+            pad_tx.send_replace(moving);
+            wait_history(&mut state, |s| s.current.is_none()).await;
+            assert_eq!(
+                std::fs::read(&active).unwrap(),
+                original,
+                "cleanup must not delete unrecovered data"
+            );
+            assert!(!dir.join(format!("walk-{new_id}.json")).exists());
+
+            std::fs::remove_dir(blocker).unwrap();
+            let recovered =
+                wait_history(&mut state, |s| s.recent.len() == 2 && s.error.is_none()).await;
+            assert_eq!(recovered.recent[0].id, new_id);
+            assert_eq!(recovered.recent[0].time_s, 4);
+            assert_eq!(recovered.recent[0].average_bpm, Some(120));
+            assert_eq!(recovered.recent[1].id, "1000-1");
+            assert!(recovered.recent[1].interrupted);
+            assert_eq!(recovered.recent[1].average_bpm, Some(95));
+            assert!(!active.exists());
+
+            drop(pad_tx);
+            drop(samples);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while state.changed().await.is_ok() {}
+            })
+            .await
+            .expect("history task stopped when inputs closed");
+            std::fs::remove_dir_all(dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn startup_reads_only_the_ten_newest_files_in_numeric_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "kc-walk-recent-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for start in 1..=20 {
+            save(
+                &dir.join(format!("walk-{start}-1.json")),
+                &stored_walk(&format!("{start}-1"), start),
+            )
+            .unwrap();
+        }
+        for sequence in [9, 10] {
+            save(
+                &dir.join(format!("walk-20-{sequence}.json")),
+                &stored_walk(&format!("20-{sequence}"), 20),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("walk-999-1.json.tmp"), "incomplete write").unwrap();
+        let expected = [
+            "20-10", "20-9", "20-1", "19-1", "18-1", "17-1", "16-1", "15-1", "14-1", "13-1",
+        ];
+        let mut reads = Vec::new();
+        let recent = load_recent(&dir, |path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                expected.iter().any(|id| name == format!("walk-{id}.json")),
+                "historical samples must not be read: {name}"
+            );
+            reads.push(name.to_owned());
+            std::fs::read(path)
+        })
+        .unwrap();
+        assert_eq!(reads, expected.map(|id| format!("walk-{id}.json")));
+        assert_eq!(
+            recent.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(recent[0].average_bpm, Some(95));
+
+        // A damaged selected file must not trigger reads of older sample files.
+        std::fs::write(dir.join("walk-20-10.json"), "broken").unwrap();
+        let mut reads = 0;
+        let recent = load_recent(&dir, |path| {
+            reads += 1;
+            std::fs::read(path)
+        })
+        .unwrap();
+        assert_eq!(reads, RECENT_LIMIT);
+        assert_eq!(recent.len(), RECENT_LIMIT - 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
