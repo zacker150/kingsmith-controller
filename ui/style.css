@@ -161,6 +161,10 @@ main { flex: 1; overflow-y: auto; padding: 0 12px; }
 .touch .toggle .keys { display: none; }
 
 .heart-panel, .walk-panel { border-top: 1px solid var(--line); padding: 12px 0; }
+.health-connect-panel { border-top: 1px solid var(--line); padding: 12px 0; }
+.health-connect-panel h2 { font-size: 16px; margin: 0 0 6px; }
+.health-connect-panel .row { flex-wrap: wrap; }
+.health-connect-panel button { min-height: 44px; }
 .heart-panel h2, .walk-panel h2 { font-size: 16px; margin: 0 0 6px; }
 .heart-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .heart-reading { font-size: 28px; font-variant-numeric: tabular-nums; }

@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { setHealthUnits } from "./health";
 import { closeWalkMenu } from "./walk-menu";
+import "./health-connect";
 
 // --- snapshot types (mirror walkingpad::session, camelCase) ---------------
 
